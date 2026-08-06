@@ -1,0 +1,36 @@
+name: photolink_pc
+description: PhotoLink（图联）PC端 - 局域网发现、浏览、下载、删除、拖拽上传手机相册
+publish_to: "none"
+version: 1.1.0+2
+
+environment:
+  sdk: ^3.11.5
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  http: ^1.4.0
+  bonsoir: ^5.1.11
+  desktop_drop: ^0.6.0
+  file_picker: ^10.2.0
+  path_provider: ^2.1.5
+  path: ^1.9.1
+  uuid: ^4.5.1
+  window_manager: ^0.5.0
+  cross_file: ^0.3.4+2
+  qr_flutter: ^4.1.0
+  shelf: ^1.4.2
+  shelf_router: ^1.1.4
+  network_info_plus: ^6.1.4
+  crypto: ^3.0.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/certs/
