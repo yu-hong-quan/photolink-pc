@@ -5,6 +5,7 @@ import 'package:cross_file/cross_file.dart';
 import 'package:desktop_drop/desktop_drop.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:http/io_client.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
@@ -17,6 +18,7 @@ import '../services/gallery_api_service.dart';
 import '../services/thumbnail_cache.dart';
 import '../services/transfer_task_queue.dart';
 import '../theme/app_theme.dart';
+import '../widgets/lazy_thumb_tile.dart';
 import '../widgets/task_queue_panel.dart';
 import 'trash_page.dart';
 
@@ -37,10 +39,9 @@ class _GalleryPageState extends State<GalleryPage> {
 
   final _photos = <PhotoMeta>[];
   final _selected = <String>{};
-  final _thumbCache = <String, Uint8List>{};
-  final _thumbLoading = <String>{};
   final _scroll = ScrollController();
   final _albums = <Map<String, dynamic>>[];
+  late final IOClient _http;
 
   int _page = 0;
   int _total = 0;
@@ -60,6 +61,7 @@ class _GalleryPageState extends State<GalleryPage> {
   void initState() {
     super.initState();
     _api = GalleryApiService(widget.device);
+    _http = createPhotoLinkHttpClient();
     _queue = TransferTaskQueue(maxConcurrency: 2);
     _watchdog = ConnectionWatchdog(device: widget.device)..start();
     _watchdog.addListener(_onConnectionChanged);
@@ -74,6 +76,7 @@ class _GalleryPageState extends State<GalleryPage> {
     _watchdog.dispose();
     _queue.dispose();
     _scroll.dispose();
+    _http.close();
     _api.close();
     super.dispose();
   }
@@ -159,37 +162,13 @@ class _GalleryPageState extends State<GalleryPage> {
       _photos.clear();
       _selected.clear();
     }
-    // 不整页预取缩略图：由 GridView.builder 可见时懒加载
+    // 元数据分页加载；缩略图由格子组件自行懒加载，避免整页 setState 卡顿
     final result = await _api.listPhotos(page: _page, albumId: _albumId);
     if (!mounted) return;
     setState(() {
       _total = result.total;
       _photos.addAll(result.list);
     });
-  }
-
-  /// 仅当格子构建到时才请求/读缓存缩略图
-  Future<void> _ensureThumb(String id) async {
-    if (_thumbCache.containsKey(id) || _thumbLoading.contains(id)) return;
-    _thumbLoading.add(id);
-    try {
-      final cached = await ThumbnailCache.instance.get(_deviceKey, id);
-      if (cached != null && mounted) {
-        setState(() => _thumbCache[id] = cached);
-        return;
-      }
-      final client = createPhotoLinkHttpClient();
-      final res = await client.get(Uri.parse(_api.thumbnailUrl(id)));
-      client.close();
-      if (res.statusCode == 200 && mounted) {
-        final bytes = res.bodyBytes;
-        await ThumbnailCache.instance.put(_deviceKey, id, bytes);
-        if (mounted) setState(() => _thumbCache[id] = bytes);
-      }
-    } catch (_) {
-    } finally {
-      _thumbLoading.remove(id);
-    }
   }
 
   void _onScroll() {
@@ -699,8 +678,9 @@ class _GalleryPageState extends State<GalleryPage> {
     return GridView.builder(
       controller: _scroll,
       padding: const EdgeInsets.all(12),
-      // 缩小预缓存范围，更接近「可见才加载」
-      cacheExtent: 240,
+      cacheExtent: 280,
+      addAutomaticKeepAlives: false,
+      addRepaintBoundaries: true,
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
         maxCrossAxisExtent: 180,
         mainAxisSpacing: 10,
@@ -713,93 +693,43 @@ class _GalleryPageState extends State<GalleryPage> {
         }
         final photo = _photos[index];
         final selected = _selected.contains(photo.id);
-        // 懒加载：仅在格子被构建时触发
-        _ensureThumb(photo.id);
-        final bytes = _thumbCache[photo.id];
-        return AnimatedScale(
-          scale: selected ? 0.96 : 1,
-          duration: const Duration(milliseconds: 160),
-          child: Material(
-            color: Colors.black12,
-            borderRadius: BorderRadius.circular(14),
-            clipBehavior: Clip.antiAlias,
-            child: InkWell(
-              onTap: () => _toggleSelect(photo.id),
-              onDoubleTap: () => _preview(photo),
-              onSecondaryTap: () => _showPhotoMenu(photo),
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  bytes == null
-                      ? const Center(
-                          child: SizedBox(
-                            width: 22,
-                            height: 22,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          ),
-                        )
-                      : Image.memory(bytes, fit: BoxFit.cover),
-                  AnimatedContainer(
-                    duration: const Duration(milliseconds: 180),
+        return RepaintBoundary(
+          child: LazyThumbTile(
+            key: ValueKey(photo.id),
+            cacheDeviceKey: _deviceKey,
+            itemId: photo.id,
+            thumbUrl: _api.thumbnailUrl(photo.id),
+            http: _http,
+            selected: selected,
+            onTap: () => _toggleSelect(photo.id),
+            onDoubleTap: () => _preview(photo),
+            onSecondaryTap: () => _showPhotoMenu(photo),
+            badge: (photo.albumName != null && photo.albumName!.isNotEmpty)
+                ? Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
                     decoration: BoxDecoration(
-                      border: Border.all(
-                        color: selected
-                            ? PhotoLinkTheme.brand
-                            : Colors.transparent,
-                        width: 3,
-                      ),
-                      borderRadius: BorderRadius.circular(14),
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(8),
                     ),
-                  ),
-                  if (photo.albumName != null && photo.albumName!.isNotEmpty)
-                    Positioned(
-                      left: 6,
-                      top: 6,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.black54,
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          photo.albumName!,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 10,
-                          ),
-                        ),
-                      ),
+                    child: Text(
+                      photo.albumName!,
+                      style: const TextStyle(color: Colors.white, fontSize: 10),
                     ),
-                  Positioned(
-                    top: 6,
-                    right: 6,
-                    child: Icon(
-                      selected
-                          ? Icons.check_circle_rounded
-                          : Icons.circle_outlined,
-                      color: selected ? PhotoLinkTheme.brand : Colors.white,
-                    ),
-                  ),
-                  Positioned(
-                    left: 4,
-                    bottom: 4,
-                    child: IconButton(
-                      style: IconButton.styleFrom(
-                        backgroundColor: Colors.black45,
-                        foregroundColor: Colors.white,
-                        padding: const EdgeInsets.all(4),
-                        minimumSize: const Size(32, 32),
-                      ),
-                      tooltip: '下载原图',
-                      onPressed: () => _enqueueDownload(photo),
-                      icon: const Icon(Icons.download_rounded, size: 18),
-                    ),
-                  ),
-                ],
+                  )
+                : null,
+            bottomLeft: IconButton(
+              style: IconButton.styleFrom(
+                backgroundColor: Colors.black45,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.all(4),
+                minimumSize: const Size(32, 32),
               ),
+              tooltip: '下载原图',
+              onPressed: () => _enqueueDownload(photo),
+              icon: const Icon(Icons.download_rounded, size: 18),
             ),
           ),
         );
@@ -1035,26 +965,10 @@ class _HeaderBar extends StatelessWidget {
             Text('已加载 $loaded / $total · 最近在前'),
             if (albums.isNotEmpty) ...[
               const SizedBox(width: 16),
-              DropdownButtonHideUnderline(
-                child: DropdownButton<String?>(
-                  value: albumId,
-                  hint: const Text('全部分类'),
-                  items: [
-                    const DropdownMenuItem<String?>(
-                      value: null,
-                      child: Text('全部相册'),
-                    ),
-                    ...albums
-                        .where((e) => e['isAll'] != true)
-                        .map(
-                          (e) => DropdownMenuItem<String?>(
-                            value: '${e['id']}',
-                            child: Text('${e['name']} (${e['count']})'),
-                          ),
-                        ),
-                  ],
-                  onChanged: onAlbumChanged,
-                ),
+              AlbumPickerButton(
+                albums: albums,
+                albumId: albumId,
+                onChanged: onAlbumChanged,
               ),
             ],
             const Spacer(),

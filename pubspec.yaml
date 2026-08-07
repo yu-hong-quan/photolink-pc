@@ -24,13 +24,25 @@ dependencies:
   shelf_router: ^1.1.4
   network_info_plus: ^6.1.4
   crypto: ^3.0.6
+  tray_manager: ^0.5.3
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
 
 flutter:
   uses-material-design: true
   assets:
     - assets/certs/
+    - assets/icons/
+
+flutter_launcher_icons:
+  android: false
+  ios: false
+  image_path: assets/icons/app_icon.png
+  windows:
+    generate: true
+    image_path: assets/icons/app_icon.png
+    icon_size: 256

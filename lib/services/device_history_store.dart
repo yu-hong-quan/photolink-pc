@@ -52,19 +52,47 @@ class DeviceHistoryStore {
   static String keyOf(DeviceInfoModel d) =>
       d.deviceId.isNotEmpty ? d.deviceId : '${d.ip}:${d.port}';
 
+  /// 同一物理设备：deviceId 相同，或 IP 相同（扫码/手动可能 key 不一致）
+  static bool isSameDevice(DeviceInfoModel a, DeviceInfoModel b) {
+    if (a.deviceId.isNotEmpty &&
+        b.deviceId.isNotEmpty &&
+        a.deviceId == b.deviceId) {
+      return true;
+    }
+    if (a.ip.isNotEmpty && a.ip == b.ip) return true;
+    return false;
+  }
+
+  /// 同一设备只保留最近一条连接记录
+  List<DeviceHistoryEntry> _dedupeKeepLatest(List<DeviceHistoryEntry> input) {
+    final sorted = [...input]
+      ..sort((a, b) => b.lastConnectedAtMs.compareTo(a.lastConnectedAtMs));
+    final result = <DeviceHistoryEntry>[];
+    for (final e in sorted) {
+      final exists = result.any((x) => isSameDevice(x.device, e.device));
+      if (!exists) result.add(e);
+    }
+    return result;
+  }
+
   Future<List<DeviceHistoryEntry>> load() async {
     final file = await _ensureFile();
     if (!await file.exists()) return [];
     try {
       final raw = jsonDecode(await file.readAsString());
       if (raw is! List) return [];
-      return raw
+      final list = raw
           .map((e) => DeviceHistoryEntry.fromJson(
                 Map<String, dynamic>.from(e as Map),
               ))
           .where((e) => e.device.ip.isNotEmpty)
-          .toList()
-        ..sort((a, b) => b.lastConnectedAtMs.compareTo(a.lastConnectedAtMs));
+          .toList();
+      final deduped = _dedupeKeepLatest(list);
+      // 历史里若有重复，写回清洗后的列表
+      if (deduped.length != list.length) {
+        await _save(deduped);
+      }
+      return deduped;
     } catch (_) {
       return [];
     }
@@ -78,31 +106,26 @@ class DeviceHistoryStore {
     );
   }
 
-  /// 连接成功或扫码配对后写入/更新记录
+  /// 连接成功或扫码配对后写入/更新记录（同一设备覆盖为最新一条）
   Future<List<DeviceHistoryEntry>> upsert(
     DeviceInfoModel device, {
     bool markConnected = true,
   }) async {
     final list = await load();
-    final key = keyOf(device);
     final now = DateTime.now().millisecondsSinceEpoch;
-    final idx = list.indexWhere((e) => keyOf(e.device) == key);
-    if (idx >= 0) {
-      list[idx].device = device;
-      list[idx].lastSeenAtMs = now;
-      if (markConnected) list[idx].lastConnectedAtMs = now;
-    } else {
-      list.add(
-        DeviceHistoryEntry(
-          device: device,
-          lastConnectedAtMs: markConnected ? now : 0,
-          lastSeenAtMs: now,
-        ),
-      );
-    }
-    list.sort((a, b) => b.lastConnectedAtMs.compareTo(a.lastConnectedAtMs));
-    await _save(list);
-    return list;
+    // 先去掉同一设备的旧记录，再插入最新
+    list.removeWhere((e) => isSameDevice(e.device, device));
+    list.insert(
+      0,
+      DeviceHistoryEntry(
+        device: device,
+        lastConnectedAtMs: markConnected ? now : 0,
+        lastSeenAtMs: now,
+      ),
+    );
+    final deduped = _dedupeKeepLatest(list);
+    await _save(deduped);
+    return deduped;
   }
 
   Future<List<DeviceHistoryEntry>> remove(String key) async {

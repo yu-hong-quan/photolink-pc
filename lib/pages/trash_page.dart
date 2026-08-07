@@ -1,12 +1,11 @@
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
+import 'package:http/io_client.dart';
 
 import '../core/models/device_info.dart';
 import '../services/api_client.dart';
 import '../services/gallery_api_service.dart';
 import '../services/thumbnail_cache.dart';
-import '../theme/app_theme.dart';
+import '../widgets/lazy_thumb_tile.dart';
 
 /// 回收站：查看软删图片、恢复、彻底删除（彻底删除后 PC 也不留存缩略图）
 class TrashPage extends StatefulWidget {
@@ -25,10 +24,9 @@ class TrashPage extends StatefulWidget {
 
 class _TrashPageState extends State<TrashPage> {
   late final GalleryApiService _api;
+  late final IOClient _http;
   final _items = <Map<String, dynamic>>[];
   final _selected = <String>{};
-  final _thumbs = <String, Uint8List>{};
-  final _thumbLoading = <String>{};
   bool _loading = true;
   String? _error;
 
@@ -39,11 +37,13 @@ class _TrashPageState extends State<TrashPage> {
   void initState() {
     super.initState();
     _api = GalleryApiService(widget.device);
+    _http = createPhotoLinkHttpClient();
     _reload();
   }
 
   @override
   void dispose() {
+    _http.close();
     _api.close();
     super.dispose();
   }
@@ -53,9 +53,6 @@ class _TrashPageState extends State<TrashPage> {
       _loading = true;
       _error = null;
       _selected.clear();
-      // 仅清内存展示缓存；磁盘缩略图可复用
-      _thumbs.clear();
-      _thumbLoading.clear();
     });
     try {
       final list = await _api.listTrash();
@@ -69,33 +66,6 @@ class _TrashPageState extends State<TrashPage> {
       if (mounted) setState(() => _error = '$e');
     } finally {
       if (mounted) setState(() => _loading = false);
-    }
-  }
-
-  /// 可见格子才加载：内存 → 磁盘 → 网络
-  Future<void> _ensureThumb(String trashId) async {
-    if (_thumbs.containsKey(trashId) || _thumbLoading.contains(trashId)) {
-      return;
-    }
-    _thumbLoading.add(trashId);
-    try {
-      final cached =
-          await ThumbnailCache.instance.get(_trashCacheDevice, trashId);
-      if (cached != null && mounted) {
-        setState(() => _thumbs[trashId] = cached);
-        return;
-      }
-      final client = createPhotoLinkHttpClient();
-      final res = await client.get(Uri.parse(_api.trashThumbUrl(trashId)));
-      client.close();
-      if (res.statusCode == 200 && mounted) {
-        final bytes = res.bodyBytes;
-        await ThumbnailCache.instance.put(_trashCacheDevice, trashId, bytes);
-        if (mounted) setState(() => _thumbs[trashId] = bytes);
-      }
-    } catch (_) {
-    } finally {
-      _thumbLoading.remove(trashId);
     }
   }
 
@@ -172,7 +142,6 @@ class _TrashPageState extends State<TrashPage> {
         await ThumbnailCache.instance.remove(widget.deviceKey, photoId);
       }
       for (final trashId in ids) {
-        _thumbs.remove(trashId);
         await ThumbnailCache.instance.remove(_trashCacheDevice, trashId);
       }
       _toast('已彻底删除');
@@ -248,8 +217,9 @@ class _TrashPageState extends State<TrashPage> {
     }
     return GridView.builder(
       padding: const EdgeInsets.all(12),
-      // 与相册一致：缩小预缓存，真正按可见区域懒加载
-      cacheExtent: 240,
+      cacheExtent: 280,
+      addAutomaticKeepAlives: false,
+      addRepaintBoundaries: true,
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
         maxCrossAxisExtent: 180,
         mainAxisSpacing: 10,
@@ -258,17 +228,18 @@ class _TrashPageState extends State<TrashPage> {
       itemCount: _items.length,
       itemBuilder: (context, index) {
         final item = _items[index];
-        // 与 App TrashItem.toJson 字段对齐：id / title / originalPhotoId
         final trashId = '${item['id']}';
         final title = '${item['title'] ?? trashId}';
         final selected = _selected.contains(trashId);
-        _ensureThumb(trashId);
-        final bytes = _thumbs[trashId];
-        return Material(
-          color: Colors.black12,
-          borderRadius: BorderRadius.circular(14),
-          clipBehavior: Clip.antiAlias,
-          child: InkWell(
+        return RepaintBoundary(
+          child: LazyThumbTile(
+            key: ValueKey(trashId),
+            cacheDeviceKey: _trashCacheDevice,
+            itemId: trashId,
+            thumbUrl: _api.trashThumbUrl(trashId),
+            http: _http,
+            selected: selected,
+            title: title,
             onTap: () {
               setState(() {
                 if (selected) {
@@ -278,56 +249,6 @@ class _TrashPageState extends State<TrashPage> {
                 }
               });
             },
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                bytes == null
-                    ? const Center(
-                        child: SizedBox(
-                          width: 22,
-                          height: 22,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        ),
-                      )
-                    : Image.memory(bytes, fit: BoxFit.cover),
-                Container(
-                  decoration: BoxDecoration(
-                    border: Border.all(
-                      color: selected
-                          ? PhotoLinkTheme.brand
-                          : Colors.transparent,
-                      width: 3,
-                    ),
-                    borderRadius: BorderRadius.circular(14),
-                  ),
-                ),
-                Positioned(
-                  left: 6,
-                  right: 6,
-                  bottom: 6,
-                  child: Text(
-                    title,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 11,
-                      shadows: [Shadow(blurRadius: 4, color: Colors.black)],
-                    ),
-                  ),
-                ),
-                Positioned(
-                  top: 6,
-                  right: 6,
-                  child: Icon(
-                    selected
-                        ? Icons.check_circle_rounded
-                        : Icons.circle_outlined,
-                    color: selected ? PhotoLinkTheme.brand : Colors.white,
-                  ),
-                ),
-              ],
-            ),
           ),
         );
       },

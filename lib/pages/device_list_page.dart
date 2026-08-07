@@ -39,6 +39,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
   bool _scanning = true;
   String? _scanError;
   String? _pairError;
+  final _autoRescanTimers = <Timer>[];
 
   @override
   void initState() {
@@ -48,6 +49,10 @@ class _DeviceListPageState extends State<DeviceListPage> {
 
   @override
   void dispose() {
+    for (final t in _autoRescanTimers) {
+      t.cancel();
+    }
+    _autoRescanTimers.clear();
     _sub?.cancel();
     _pairSub?.cancel();
     _discovery.dispose();
@@ -58,7 +63,45 @@ class _DeviceListPageState extends State<DeviceListPage> {
   Future<void> _bootstrap() async {
     _history = await DeviceHistoryStore.instance.load();
     if (mounted) setState(() {});
-    await Future.wait([_startPairServer(), _startScan()]);
+
+    // 订阅一次即可；后续只 restart discovery，避免反复 cancel 丢事件
+    _sub?.cancel();
+    _sub = _discovery.devicesStream.listen((list) {
+      if (!mounted) return;
+      _applyLiveList(list);
+    });
+
+    // 等首帧 + 短延迟：避开窗口/托盘初始化抢网卡导致的首次 mDNS 空跑
+    await Future<void>.delayed(Duration.zero);
+    if (!mounted) return;
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    if (!mounted) return;
+
+    await Future.wait([
+      _startPairServer(),
+      _startScan(isManual: false, preserveCache: false),
+      _probeHistoryOnline(),
+    ]);
+
+    // Windows Bonsoir 常需 2～3 次启动才稳定出结果；无设备时多轮自动重扫
+    _scheduleAutoRescans();
+  }
+
+  /// 在 1.2s / 3s / 5.5s 自动重启发现（已有实时设备则跳过）
+  void _scheduleAutoRescans() {
+    for (final t in _autoRescanTimers) {
+      t.cancel();
+    }
+    _autoRescanTimers.clear();
+    for (final ms in [1200, 3000, 5500]) {
+      _autoRescanTimers.add(Timer(Duration(milliseconds: ms), () {
+        if (!mounted) return;
+        if (_liveDevices.isNotEmpty) return;
+        _startScan(isManual: false, preserveCache: true);
+      }));
+    }
   }
 
   Future<void> _startPairServer() async {
@@ -96,38 +139,92 @@ class _DeviceListPageState extends State<DeviceListPage> {
     }
   }
 
-  Future<void> _startScan() async {
+  /// 用户点刷新：只重扫列表，不打断相册页已有 HTTPS 会话；保留实时项
+  Future<void> _refreshDeviceList() async {
+    // 延长 sticky，避免 mDNS 瞬时空结果把「可连接」项冲掉
+    final stickyUntil = DateTime.now().add(const Duration(minutes: 5));
+    for (final key in _liveDevices.keys) {
+      _stickyLiveUntil[key] = stickyUntil;
+    }
+    await Future.wait([
+      _startScan(isManual: true, preserveCache: true),
+      _probeHistoryOnline(),
+    ]);
+  }
+
+  Future<void> _startScan({
+    bool isManual = true,
+    bool preserveCache = true,
+  }) async {
+    if (!mounted) return;
     setState(() {
       _scanning = true;
       _scanError = null;
     });
     try {
-      _sub?.cancel();
-      _sub = _discovery.devicesStream.listen((list) {
-        if (!mounted) return;
-        final now = DateTime.now();
-        final next = <String, DeviceInfoModel>{};
-        for (final d in list) {
-          next[_keyOf(d)] = d;
-        }
-        // 刚扫码/手动加入的设备短时保留在「实时」区
-        _stickyLiveUntil.removeWhere((_, until) => until.isBefore(now));
-        for (final key in _stickyLiveUntil.keys) {
-          final cached = _liveDevices[key];
-          if (cached != null) next.putIfAbsent(key, () => cached);
-        }
-        setState(() {
-          _liveDevices
-            ..clear()
-            ..addAll(next);
-        });
-      });
-      await _discovery.start();
+      // preserveCache=true 时不刷空已发现设备（含相册页底层列表）
+      await _discovery.start(preserveCache: preserveCache);
+      if (mounted) _applyLiveList(_discovery.devices);
     } catch (e) {
-      setState(() => _scanError = 'mDNS 启动失败：$e');
+      if (mounted) setState(() => _scanError = 'mDNS 启动失败：$e');
     } finally {
-      if (mounted) setState(() => _scanning = false);
+      // 手动刷新稍候关「扫描中」；自动扫描多留一会方便多轮重试
+      final delay = isManual
+          ? const Duration(milliseconds: 800)
+          : const Duration(milliseconds: 2800);
+      Future<void>.delayed(delay, () {
+        if (mounted) setState(() => _scanning = false);
+      });
     }
+  }
+
+  void _applyLiveList(List<DeviceInfoModel> list) {
+    final now = DateTime.now();
+    final next = <String, DeviceInfoModel>{};
+    for (final d in list) {
+      next[_keyOf(d)] = d;
+    }
+    // 刚扫码/手动加入的设备短时保留在「实时」区
+    _stickyLiveUntil.removeWhere((_, until) => until.isBefore(now));
+    for (final key in _stickyLiveUntil.keys) {
+      final cached = _liveDevices[key];
+      if (cached != null) next.putIfAbsent(key, () => cached);
+    }
+    setState(() {
+      _liveDevices
+        ..clear()
+        ..addAll(next);
+    });
+  }
+
+  /// 启动时探测历史设备是否仍在线，不依赖 mDNS 也能进「实时可连接」
+  Future<void> _probeHistoryOnline() async {
+    if (_history.isEmpty) return;
+    await Future.wait(_history.map((entry) async {
+      final api = GalleryApiService(entry.device);
+      try {
+        final remote = await api
+            .fetchDeviceInfo()
+            .timeout(const Duration(seconds: 2));
+        if (!mounted) return;
+        final merged = DeviceInfoModel(
+          deviceId:
+              remote.deviceId.isNotEmpty ? remote.deviceId : entry.device.deviceId,
+          deviceName: remote.deviceName.isNotEmpty
+              ? remote.deviceName
+              : entry.device.deviceName,
+          deviceType: remote.deviceType,
+          osVersion: remote.osVersion,
+          ip: entry.device.ip,
+          port: entry.device.port,
+        );
+        _upsertLive(merged);
+      } catch (_) {
+        // 离线忽略
+      } finally {
+        api.close();
+      }
+    }));
   }
 
   String _keyOf(DeviceInfoModel device) => DeviceHistoryStore.keyOf(device);
@@ -345,8 +442,8 @@ class _DeviceListPageState extends State<DeviceListPage> {
           ),
           actions: [
             IconButton(
-              tooltip: '重新扫描',
-              onPressed: _startScan,
+              tooltip: '刷新设备列表（不中断已连接相册）',
+              onPressed: _refreshDeviceList,
               icon: const Icon(Icons.refresh_rounded),
             ),
             FilledButton.tonalIcon(

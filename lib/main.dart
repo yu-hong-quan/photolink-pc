@@ -3,11 +3,13 @@ import 'package:window_manager/window_manager.dart';
 
 import 'core/constants.dart';
 import 'pages/device_list_page.dart';
+import 'services/app_tray_service.dart';
 import 'theme/app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await windowManager.ensureInitialized();
+
   const options = WindowOptions(
     size: Size(1180, 760),
     minimumSize: Size(980, 640),
@@ -18,6 +20,10 @@ Future<void> main() async {
     await windowManager.show();
     await windowManager.focus();
   });
+
+  // 系统托盘：显示 / 隐藏 / 退出
+  await AppTrayService.instance.init();
+
   runApp(const PhotoLinkPcApp());
 }
 
