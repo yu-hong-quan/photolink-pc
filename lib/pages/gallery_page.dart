@@ -897,7 +897,7 @@ class _OriginalPreviewDialogState extends State<_OriginalPreviewDialog> {
   }
 }
 
-/// 连接状态小徽章
+/// 连接状态小徽章（相册页标题旁）
 class _ConnectionBadge extends StatelessWidget {
   const _ConnectionBadge({required this.connected});
 
@@ -905,22 +905,38 @@ class _ConnectionBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final color =
+        connected ? const Color(0xFF1FA87A) : Colors.red.shade700;
     return AnimatedContainer(
       duration: const Duration(milliseconds: 250),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
       decoration: BoxDecoration(
         color: connected
             ? const Color(0xFF1FA87A).withValues(alpha: 0.15)
             : Colors.red.withValues(alpha: 0.12),
         borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
       ),
-      child: Text(
-        connected ? '已连接' : '已断开',
-        style: TextStyle(
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
-          color: connected ? const Color(0xFF1FA87A) : Colors.red.shade700,
-        ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            connected
+                ? Icons.wifi_tethering_rounded
+                : Icons.wifi_tethering_error_rounded,
+            size: 14,
+            color: color,
+          ),
+          const SizedBox(width: 5),
+          Text(
+            connected ? '设备已连接' : '连接已断开',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: color,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -972,14 +988,33 @@ class _HeaderBar extends StatelessWidget {
               ),
             ],
             const Spacer(),
-            Text(
-              connected
-                  ? '单击选择 · 双击预览原图 · 右键更多 · 拖拽上传'
-                  : '连接已断开，传输可能失败',
-              style: TextStyle(
-                color:
-                    connected ? const Color(0xFF5A6F6D) : Colors.red.shade700,
-              ),
+            // 右侧醒目展示链路连通状态
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  connected
+                      ? Icons.check_circle_rounded
+                      : Icons.error_outline_rounded,
+                  size: 16,
+                  color: connected
+                      ? const Color(0xFF1FA87A)
+                      : Colors.red.shade700,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  connected
+                      ? '设备连接正常 · 单击选择 · 双击预览 · 拖拽上传'
+                      : '连接已断开，传输可能失败',
+                  style: TextStyle(
+                    color: connected
+                        ? const Color(0xFF5A6F6D)
+                        : Colors.red.shade700,
+                    fontWeight:
+                        connected ? FontWeight.w500 : FontWeight.w700,
+                  ),
+                ),
+              ],
             ),
           ],
         ),

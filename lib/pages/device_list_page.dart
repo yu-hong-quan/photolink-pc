@@ -46,6 +46,10 @@ class _DeviceListPageState extends State<DeviceListPage> {
   bool _connecting = false;
   /// 当前是否已打开相册页（配对自动连接时避免叠多层）
   bool _galleryOpen = false;
+  /// 当前/最近一次成功连接的手机（用于连接状态展示）
+  DeviceInfoModel? _sessionDevice;
+  /// 相册页仍打开时视为「会话进行中」
+  bool _sessionActive = false;
 
   @override
   void initState() {
@@ -124,6 +128,8 @@ class _DeviceListPageState extends State<DeviceListPage> {
 
         // 已在浏览相册：只提示，不叠一层；否则配对成功后自动连接
         if (_galleryOpen || _connecting) {
+          // 已有会话时仍刷新状态条上的设备信息
+          setState(() => _sessionDevice = phone);
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(
@@ -133,6 +139,9 @@ class _DeviceListPageState extends State<DeviceListPage> {
           );
           return;
         }
+        setState(() {
+          _sessionDevice = phone;
+        });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
@@ -291,11 +300,14 @@ class _DeviceListPageState extends State<DeviceListPage> {
         ip: device.ip,
         port: device.port,
       );
-      // 连接成功：写入实时 + 历史记录
+      // 连接成功：写入实时 + 历史记录，并更新会话状态条
       _upsertLive(merged);
       _history = await DeviceHistoryStore.instance.upsert(merged);
       if (!mounted) return;
-      setState(() {});
+      setState(() {
+        _sessionDevice = merged;
+        _sessionActive = true;
+      });
 
       _galleryOpen = true;
       await Navigator.of(context).push(
@@ -319,6 +331,10 @@ class _DeviceListPageState extends State<DeviceListPage> {
           },
         ),
       );
+      // 从相册返回：保留设备信息，状态改为「最近会话」
+      if (mounted) {
+        setState(() => _sessionActive = false);
+      }
     } catch (e) {
       if (mounted) {
         Navigator.of(context).maybePop();
@@ -335,6 +351,15 @@ class _DeviceListPageState extends State<DeviceListPage> {
       _connecting = false;
       api.close();
     }
+  }
+
+  bool _isSameDevice(DeviceInfoModel a, DeviceInfoModel b) {
+    if (a.deviceId.isNotEmpty &&
+        b.deviceId.isNotEmpty &&
+        a.deviceId == b.deviceId) {
+      return true;
+    }
+    return a.ip == b.ip && a.port == b.port;
   }
 
   Future<void> _showManualConnect() async {
@@ -460,6 +485,13 @@ class _DeviceListPageState extends State<DeviceListPage> {
               ),
               const SizedBox(width: 10),
               const Text('${PhotoLinkConst.appName} · ${PhotoLinkConst.appNameZh}'),
+              if (_sessionDevice != null) ...[
+                const SizedBox(width: 12),
+                _AppBarSessionChip(
+                  device: _sessionDevice!,
+                  active: _sessionActive || _galleryOpen,
+                ),
+              ],
             ],
           ),
           actions: [
@@ -588,6 +620,22 @@ class _DeviceListPageState extends State<DeviceListPage> {
                             ],
                           ),
                         ),
+                        // 有会话设备时展示连接状态（浏览相册 / 返回列表均可看到）
+                        if (_sessionDevice != null)
+                          _ConnectionStatusBanner(
+                            device: _sessionDevice!,
+                            active: _sessionActive || _galleryOpen,
+                            connecting: _connecting,
+                            onOpenGallery: (_sessionActive || _galleryOpen)
+                                ? null
+                                : () => _connect(_sessionDevice!),
+                            onDismiss: () {
+                              setState(() {
+                                _sessionDevice = null;
+                                _sessionActive = false;
+                              });
+                            },
+                          ),
                         if (_scanError != null)
                           Padding(
                             padding: const EdgeInsets.all(12),
@@ -660,11 +708,16 @@ class _DeviceListPageState extends State<DeviceListPage> {
         else
           ...List.generate(live.length, (index) {
             final d = live[index];
+            final session = _sessionDevice;
+            final isSession =
+                session != null && _isSameDevice(session, d);
             return Padding(
               padding: const EdgeInsets.only(bottom: 10),
               child: _DeviceTile(
                 device: d,
                 live: true,
+                isSession: isSession,
+                sessionActive: isSession && (_sessionActive || _galleryOpen),
                 onConnect: () => _connect(d),
               ),
             );
@@ -686,11 +739,16 @@ class _DeviceListPageState extends State<DeviceListPage> {
         else
           ...List.generate(historyOnly.length, (index) {
             final entry = historyOnly[index];
+            final session = _sessionDevice;
+            final isSession =
+                session != null && _isSameDevice(session, entry.device);
             return Padding(
               padding: const EdgeInsets.only(bottom: 10),
               child: _DeviceTile(
                 device: entry.device,
                 live: false,
+                isSession: isSession,
+                sessionActive: false,
                 lastConnectedAtMs: entry.lastConnectedAtMs,
                 onConnect: () => _connect(entry.device),
                 onRemove: () => _removeHistory(entry),
@@ -698,6 +756,134 @@ class _DeviceListPageState extends State<DeviceListPage> {
             );
           }),
       ],
+    );
+  }
+}
+
+/// AppBar 上的精简连接状态芯片
+class _AppBarSessionChip extends StatelessWidget {
+  const _AppBarSessionChip({
+    required this.device,
+    required this.active,
+  });
+
+  final DeviceInfoModel device;
+  final bool active;
+
+  @override
+  Widget build(BuildContext context) {
+    final color =
+        active ? const Color(0xFF1FA87A) : const Color(0xFF6A8A84);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            active
+                ? Icons.phonelink_rounded
+                : Icons.phonelink_erase_rounded,
+            size: 14,
+            color: color,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            active
+                ? '已连接 · ${device.deviceName}'
+                : '最近 · ${device.deviceName}',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+              color: color,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 设备列表顶部：展示当前/最近连接的手机状态
+class _ConnectionStatusBanner extends StatelessWidget {
+  const _ConnectionStatusBanner({
+    required this.device,
+    required this.active,
+    required this.connecting,
+    required this.onOpenGallery,
+    required this.onDismiss,
+  });
+
+  final DeviceInfoModel device;
+  final bool active;
+  final bool connecting;
+  final VoidCallback? onOpenGallery;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final color =
+        active ? const Color(0xFF1FA87A) : const Color(0xFF5A7A74);
+    final title = connecting
+        ? '正在连接手机…'
+        : active
+            ? '设备已连接'
+            : '最近连接的设备';
+    final subtitle = connecting
+        ? '正在打开「${device.deviceName}」相册'
+        : active
+            ? '正在浏览「${device.deviceName}」相册 · ${device.ip}:${device.port}'
+            : '「${device.deviceName}」· ${device.ip}:${device.port}';
+
+    return Material(
+      color: color.withValues(alpha: 0.10),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+        child: Row(
+          children: [
+            PulseDot(color: active || connecting ? color : const Color(0xFF9AABA8)),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: TextStyle(
+                      fontWeight: FontWeight.w800,
+                      fontSize: 14,
+                      color: color,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    subtitle,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFF5A6F6D),
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            if (onOpenGallery != null)
+              TextButton(
+                onPressed: onOpenGallery,
+                child: const Text('打开相册'),
+              ),
+            IconButton(
+              tooltip: '清除状态',
+              onPressed: onDismiss,
+              icon: const Icon(Icons.close_rounded, size: 18),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
@@ -780,12 +966,18 @@ class _DeviceTile extends StatelessWidget {
     required this.device,
     required this.live,
     required this.onConnect,
+    this.isSession = false,
+    this.sessionActive = false,
     this.lastConnectedAtMs,
     this.onRemove,
   });
 
   final DeviceInfoModel device;
   final bool live;
+  /// 是否为当前/最近会话设备
+  final bool isSession;
+  /// 会话是否仍在相册页进行中
+  final bool sessionActive;
   final VoidCallback onConnect;
   final int? lastConnectedAtMs;
   final VoidCallback? onRemove;
@@ -801,13 +993,26 @@ class _DeviceTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final highlight = isSession && sessionActive;
     return Material(
-      color: live ? const Color(0xFFF8FBFA) : const Color(0xFFF5F5F5),
+      color: highlight
+          ? const Color(0xFFE8F8F2)
+          : live
+              ? const Color(0xFFF8FBFA)
+              : const Color(0xFFF5F5F5),
       borderRadius: BorderRadius.circular(16),
       child: InkWell(
         borderRadius: BorderRadius.circular(16),
         onTap: onConnect,
-        child: Padding(
+        child: Container(
+          decoration: highlight
+              ? BoxDecoration(
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: const Color(0xFF1FA87A).withValues(alpha: 0.45),
+                  ),
+                )
+              : null,
           padding: const EdgeInsets.all(14),
           child: Row(
             children: [
@@ -848,17 +1053,25 @@ class _DeviceTile extends StatelessWidget {
                             vertical: 2,
                           ),
                           decoration: BoxDecoration(
-                            color: live
-                                ? const Color(0xFF1FA87A).withValues(alpha: 0.15)
-                                : Colors.black12,
+                            color: isSession
+                                ? const Color(0xFF1FA87A)
+                                    .withValues(alpha: 0.18)
+                                : live
+                                    ? const Color(0xFF1FA87A)
+                                        .withValues(alpha: 0.15)
+                                    : Colors.black12,
                             borderRadius: BorderRadius.circular(8),
                           ),
                           child: Text(
-                            live ? '在线' : '离线记录',
+                            isSession
+                                ? (sessionActive ? '当前连接' : '最近会话')
+                                : live
+                                    ? '在线'
+                                    : '离线记录',
                             style: TextStyle(
                               fontSize: 10,
                               fontWeight: FontWeight.w700,
-                              color: live
+                              color: isSession || live
                                   ? const Color(0xFF1FA87A)
                                   : const Color(0xFF6A7A78),
                             ),

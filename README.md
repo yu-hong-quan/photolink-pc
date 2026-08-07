@@ -6,6 +6,22 @@
 
 ---
 
+## 界面预览
+
+### 设备列表与扫码配对
+
+左侧展示配对二维码与连接串，右侧为实时可连接设备与连接记录；支持放大二维码、手动连接、刷新扫描。
+
+![设备列表与扫码配对](docs/screenshots/pc-device-list.png)
+
+### 手机相册浏览
+
+连接成功后进入相册：缩略图网格、已连接状态、相册筛选；支持选择、下载、上传、拖拽上传与原图预览。
+
+![手机相册浏览](docs/screenshots/pc-gallery.png)
+
+---
+
 ## 功能概览
 
 | 能力 | 说明 |
@@ -113,6 +129,7 @@ lib/
   widgets/        # 懒加载缩略图、任务队列面板等
   theme/          # 主题
 scripts/          # 多环境运行 / 打包脚本
+docs/screenshots/ # README 界面截图
 assets/certs/     # 自签名证书（配对 HTTPS）
 assets/icons/     # 应用 / 托盘图标
 ```
@@ -145,7 +162,7 @@ assets/icons/     # 应用 / 托盘图标
 
 ## 作者
 
-- 作者：余洪权（yu-hong-quan）
+- 作者：余洪全（yu-hong-quan）
 - GitHub：https://github.com/yu-hong-quan
 - 仓库：https://github.com/yu-hong-quan/photolink-pc
 
