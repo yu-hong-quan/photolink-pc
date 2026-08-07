@@ -80,16 +80,38 @@ flutter run -d windows --dart-define=FLAVOR=local
 
 ## 打包
 
-### Windows
+### Windows（绿色目录）
 
 ```bash
 .\scripts\build-windows.cmd prod
 # 或
-.\scripts\build-windows.ps1 -Env test
+.\scripts\build-windows.ps1 -EnvName test
 ```
 
 产物目录：`build/windows/x64/runner/Release/`  
 分发时请拷贝**整个 Release 目录**（含 `photolink_pc.exe` 与同目录 DLL）。
+
+### Windows 安装包（Inno Setup）
+
+依赖：本机安装 [Inno Setup 6](https://jrsoftware.org/isinfo.php)（需带简体中文语言包）。
+
+```bash
+.\scripts\build-windows-installer.cmd local
+# 或
+.\scripts\build-windows-installer.ps1 -EnvName prod
+```
+
+产物：`dist/installer/PhotoLink-Setup-{version}-{env}.exe`  
+- 安装向导为**简体中文**
+- **安装路径支持中文**（可在向导中自定义，如 `D:\测试目录\图联`）
+- 默认目录：`C:\Program Files\PhotoLink`（也可选当前用户安装）
+- 手机端与电脑端 **FLAVOR 必须一致**
+
+仅已有 Release、只重编 Setup 时：
+
+```bash
+.\scripts\build-windows-installer.ps1 -EnvName local -SkipFlutterBuild
+```
 
 ### macOS（需在 Mac 上）
 
@@ -128,7 +150,8 @@ lib/
   services/       # mDNS 发现/广播、配对、相册 API、托盘、缓存等
   widgets/        # 懒加载缩略图、任务队列面板等
   theme/          # 主题
-scripts/          # 多环境运行 / 打包脚本
+scripts/          # 多环境运行 / 打包 / 安装包脚本
+installer/windows/# Inno Setup 安装脚本（支持中文路径）
 docs/screenshots/ # README 界面截图
 assets/certs/     # 自签名证书（配对 HTTPS）
 assets/icons/     # 应用 / 托盘图标

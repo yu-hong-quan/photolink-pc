@@ -1,6 +1,7 @@
-# 打包 Windows 桌面版
-# 用法：.\scripts\build-windows.ps1 -Env prod
+﻿# 打包 Windows 桌面版（不含 Setup 安装包）
+# 用法：.\scripts\build-windows.ps1 -EnvName prod
 # 产物：build\windows\x64\runner\Release\
+# 安装包请用：.\scripts\build-windows-installer.ps1 -EnvName prod
 
 param(
   [ValidateSet('local', 'test', 'prod')]
@@ -20,5 +21,6 @@ flutter build windows --release @PhotoLinkDefines
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $out = "build\windows\x64\runner\Release"
-Write-Host "完成：$out\photolink_pc.exe" -ForegroundColor Green
-Write-Host "可将整个 Release 目录拷贝分发（需包含同目录 DLL）。"
+Write-Host "完成: $out\photolink_pc.exe" -ForegroundColor Green
+Write-Host "分发请拷贝整个 Release 目录（含同目录 DLL）。"
+Write-Host "或执行 build-windows-installer.ps1 生成 Setup.exe。"
