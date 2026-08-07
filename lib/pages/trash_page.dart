@@ -28,8 +28,12 @@ class _TrashPageState extends State<TrashPage> {
   final _items = <Map<String, dynamic>>[];
   final _selected = <String>{};
   final _thumbs = <String, Uint8List>{};
+  final _thumbLoading = <String>{};
   bool _loading = true;
   String? _error;
+
+  /// 回收站缩略图缓存命名空间，与相册原图 id 隔离
+  String get _trashCacheDevice => '${widget.deviceKey}::trash';
 
   @override
   void initState() {
@@ -49,6 +53,9 @@ class _TrashPageState extends State<TrashPage> {
       _loading = true;
       _error = null;
       _selected.clear();
+      // 仅清内存展示缓存；磁盘缩略图可复用
+      _thumbs.clear();
+      _thumbLoading.clear();
     });
     try {
       final list = await _api.listTrash();
@@ -65,17 +72,31 @@ class _TrashPageState extends State<TrashPage> {
     }
   }
 
-  /// 仅在格子可见构建时拉取缩略图（懒加载）
+  /// 可见格子才加载：内存 → 磁盘 → 网络
   Future<void> _ensureThumb(String trashId) async {
-    if (_thumbs.containsKey(trashId)) return;
+    if (_thumbs.containsKey(trashId) || _thumbLoading.contains(trashId)) {
+      return;
+    }
+    _thumbLoading.add(trashId);
     try {
+      final cached =
+          await ThumbnailCache.instance.get(_trashCacheDevice, trashId);
+      if (cached != null && mounted) {
+        setState(() => _thumbs[trashId] = cached);
+        return;
+      }
       final client = createPhotoLinkHttpClient();
       final res = await client.get(Uri.parse(_api.trashThumbUrl(trashId)));
       client.close();
       if (res.statusCode == 200 && mounted) {
-        setState(() => _thumbs[trashId] = res.bodyBytes);
+        final bytes = res.bodyBytes;
+        await ThumbnailCache.instance.put(_trashCacheDevice, trashId, bytes);
+        if (mounted) setState(() => _thumbs[trashId] = bytes);
       }
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      _thumbLoading.remove(trashId);
+    }
   }
 
   void _toast(String msg) {
@@ -152,6 +173,7 @@ class _TrashPageState extends State<TrashPage> {
       }
       for (final trashId in ids) {
         _thumbs.remove(trashId);
+        await ThumbnailCache.instance.remove(_trashCacheDevice, trashId);
       }
       _toast('已彻底删除');
       await _reload();
@@ -226,6 +248,8 @@ class _TrashPageState extends State<TrashPage> {
     }
     return GridView.builder(
       padding: const EdgeInsets.all(12),
+      // 与相册一致：缩小预缓存，真正按可见区域懒加载
+      cacheExtent: 240,
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
         maxCrossAxisExtent: 180,
         mainAxisSpacing: 10,
@@ -258,7 +282,13 @@ class _TrashPageState extends State<TrashPage> {
               fit: StackFit.expand,
               children: [
                 bytes == null
-                    ? const Center(child: Icon(Icons.image_outlined))
+                    ? const Center(
+                        child: SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                      )
                     : Image.memory(bytes, fit: BoxFit.cover),
                 Container(
                   decoration: BoxDecoration(
