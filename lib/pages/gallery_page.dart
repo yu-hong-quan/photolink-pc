@@ -222,6 +222,27 @@ class _GalleryPageState extends State<GalleryPage> {
     });
   }
 
+  /// 全选 / 取消全选（针对当前已加载列表）
+  void _toggleSelectAll() {
+    setState(() {
+      final allIds = _photos.map((e) => e.id).toSet();
+      final allSelected =
+          allIds.isNotEmpty && allIds.every(_selected.contains);
+      if (allSelected) {
+        _selected.clear();
+      } else {
+        _selected
+          ..clear()
+          ..addAll(allIds);
+      }
+    });
+  }
+
+  bool get _allLoadedSelected {
+    if (_photos.isEmpty) return false;
+    return _photos.every((e) => _selected.contains(e.id));
+  }
+
   Future<void> _deleteSelected() async {
     if (_selected.isEmpty) return;
     final ok = await showDialog<bool>(
@@ -540,6 +561,16 @@ class _GalleryPageState extends State<GalleryPage> {
             ],
           ),
           actions: [
+            if (_photos.isNotEmpty)
+              TextButton.icon(
+                onPressed: _toggleSelectAll,
+                icon: Icon(
+                  _allLoadedSelected
+                      ? Icons.deselect_rounded
+                      : Icons.select_all_rounded,
+                ),
+                label: Text(_allLoadedSelected ? '取消全选' : '全选'),
+              ),
             if (_selected.isNotEmpty) ...[
               TextButton.icon(
                 onPressed: _downloadSelected,
@@ -559,11 +590,11 @@ class _GalleryPageState extends State<GalleryPage> {
               TextButton.icon(
                 onPressed: _deleteSelected,
                 icon: const Icon(Icons.delete_outline_rounded),
-                label: Text('回收站(${_selected.length})'),
+                label: Text('移入回收站(${_selected.length})'),
               ),
             ],
             IconButton(
-              tooltip: '回收站',
+              tooltip: '打开回收站',
               onPressed: _openTrash,
               icon: const Icon(Icons.delete_sweep_rounded),
             ),

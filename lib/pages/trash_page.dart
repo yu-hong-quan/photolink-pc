@@ -83,6 +83,27 @@ class _TrashPageState extends State<TrashPage> {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
+  /// 全选 / 取消全选回收站全部条目
+  void _toggleSelectAll() {
+    setState(() {
+      final allIds = _items.map((e) => '${e['id']}').toSet();
+      final allSelected =
+          allIds.isNotEmpty && allIds.every(_selected.contains);
+      if (allSelected) {
+        _selected.clear();
+      } else {
+        _selected
+          ..clear()
+          ..addAll(allIds);
+      }
+    });
+  }
+
+  bool get _allSelected {
+    if (_items.isEmpty) return false;
+    return _items.every((e) => _selected.contains('${e['id']}'));
+  }
+
   Future<void> _restore() async {
     if (_selected.isEmpty) return;
     try {
@@ -146,6 +167,16 @@ class _TrashPageState extends State<TrashPage> {
       appBar: AppBar(
         title: const Text('回收站'),
         actions: [
+          if (_items.isNotEmpty)
+            TextButton.icon(
+              onPressed: _toggleSelectAll,
+              icon: Icon(
+                _allSelected
+                    ? Icons.deselect_rounded
+                    : Icons.select_all_rounded,
+              ),
+              label: Text(_allSelected ? '取消全选' : '全选'),
+            ),
           if (_selected.isNotEmpty) ...[
             TextButton.icon(
               onPressed: _restore,
