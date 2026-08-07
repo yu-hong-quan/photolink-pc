@@ -25,6 +25,8 @@ dependencies:
   network_info_plus: ^6.1.4
   crypto: ^3.0.6
   tray_manager: ^0.5.3
+  package_info_plus: ^8.3.0
+  url_launcher: ^6.3.1
 
 dev_dependencies:
   flutter_test:

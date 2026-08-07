@@ -1,3 +1,5 @@
+import '../constants.dart';
+
 /// 设备信息（/api/device/info 与 mDNS TXT 共用）
 class DeviceInfoModel {
   const DeviceInfoModel({
@@ -34,7 +36,7 @@ class DeviceInfoModel {
       deviceType: json['deviceType']?.toString() ?? 'phone',
       osVersion: json['osVersion']?.toString() ?? '',
       ip: json['ip']?.toString() ?? '',
-      port: int.tryParse('${json['port']}') ?? 53317,
+      port: int.tryParse('${json['port']}') ?? PhotoLinkConst.port,
     );
   }
 
@@ -56,7 +58,7 @@ class DeviceInfoModel {
         deviceType: 'phone',
         osVersion: '',
         ip: uri.host,
-        port: uri.hasPort ? uri.port : 53317,
+        port: uri.hasPort ? uri.port : PhotoLinkConst.port,
       );
     } catch (_) {
       return null;
@@ -77,7 +79,7 @@ class DeviceInfoModel {
         deviceType: 'pc',
         osVersion: '',
         ip: uri.host,
-        port: uri.hasPort ? uri.port : 53318,
+        port: uri.hasPort ? uri.port : PhotoLinkConst.pairPort,
       );
     } catch (_) {
       return null;

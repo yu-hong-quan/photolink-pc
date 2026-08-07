@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'core/app_env.dart';
 import 'core/constants.dart';
 import 'pages/device_list_page.dart';
 import 'services/app_tray_service.dart';
@@ -10,11 +11,13 @@ Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await windowManager.ensureInitialized();
 
-  const options = WindowOptions(
-    size: Size(1180, 760),
-    minimumSize: Size(980, 640),
+  final title =
+      'PhotoLink · 图联${AppEnv.flavor == AppFlavor.prod ? '' : ' · ${AppEnv.flavorLabel}'}';
+  final options = WindowOptions(
+    size: const Size(1180, 760),
+    minimumSize: const Size(980, 640),
     center: true,
-    title: 'PhotoLink · 图联',
+    title: title,
   );
   await windowManager.waitUntilReadyToShow(options, () async {
     await windowManager.show();
@@ -34,7 +37,7 @@ class PhotoLinkPcApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: '${PhotoLinkConst.appName} · ${PhotoLinkConst.appNameZh}',
-      debugShowCheckedModeBanner: false,
+      debugShowCheckedModeBanner: AppEnv.showDebugBanner,
       theme: PhotoLinkTheme.light(),
       home: const DeviceListPage(),
     );

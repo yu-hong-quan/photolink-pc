@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:shelf/shelf.dart';
@@ -11,19 +12,21 @@ import 'package:uuid/uuid.dart';
 
 import '../core/constants.dart';
 import '../core/models/device_info.dart';
+import 'mdns_advertise_service.dart';
 
-/// PC 配对服务：展示二维码，接收 App 扫码后回传的手机设备信息
+/// PC 配对服务：展示二维码 / mDNS，接收 App 回传的手机设备信息
 class PcPairService {
   PcPairService();
 
   HttpServer? _server;
   DeviceInfoModel? pcInfo;
+  final _mdns = MdnsAdvertiseService();
   final _pairedController = StreamController<DeviceInfoModel>.broadcast();
 
   Stream<DeviceInfoModel> get pairedPhoneStream => _pairedController.stream;
   bool get isRunning => _server != null;
 
-  /// 启动配对 HTTPS 服务，并生成本机 PC 信息（用于二维码）
+  /// 启动配对 HTTPS 服务，并广播 mDNS 供手机主动发现
   Future<DeviceInfoModel> start() async {
     if (_server != null && pcInfo != null) return pcInfo!;
 
@@ -34,7 +37,7 @@ class PcPairService {
       deviceType: 'pc',
       osVersion: Platform.operatingSystemVersion,
       ip: ip,
-      // 二维码里的 port 指向配对端口
+      // 二维码 / mDNS 的 port 指向配对端口
       port: PhotoLinkConst.pairPort,
     );
 
@@ -52,7 +55,7 @@ class PcPairService {
       );
     });
 
-    // App 扫码后把手机相册服务地址 POST 回来
+    // App 扫码或搜到电脑后，把手机相册服务地址 POST 回来
     router.post('/api/pair', (Request request) async {
       try {
         final body = await request.readAsString();
@@ -87,6 +90,14 @@ class PcPairService {
       PhotoLinkConst.pairPort,
       securityContext: context,
     );
+
+    // HTTPS 就绪后再广播，避免手机发现后立刻配对失败
+    try {
+      await _mdns.start(pcInfo!);
+    } catch (e) {
+      // 广播失败不影响扫码配对
+      debugPrint('PC mDNS 广播失败（扫码仍可用）: $e');
+    }
     return pcInfo!;
   }
 
@@ -123,6 +134,7 @@ class PcPairService {
   }
 
   Future<void> stop() async {
+    await _mdns.stop();
     await _server?.close(force: true);
     _server = null;
   }

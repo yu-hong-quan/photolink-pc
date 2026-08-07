@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../core/app_env.dart';
 import '../core/constants.dart';
 import '../core/models/device_info.dart';
 import '../services/device_history_store.dart';
@@ -12,6 +13,7 @@ import '../services/mdns_discovery_service.dart';
 import '../services/pc_pair_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/motion.dart';
+import 'about_page.dart';
 import 'gallery_page.dart';
 
 /// PC 设备列表：实时可连接设备 + 历史连接记录
@@ -442,6 +444,17 @@ class _DeviceListPageState extends State<DeviceListPage> {
           ),
           actions: [
             IconButton(
+              tooltip: '关于作者',
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const AboutPage(clientLabel: '电脑端'),
+                  ),
+                );
+              },
+              icon: const Icon(Icons.info_outline_rounded),
+            ),
+            IconButton(
               tooltip: '刷新设备列表（不中断已连接相册）',
               onPressed: _refreshDeviceList,
               icon: const Icon(Icons.refresh_rounded),
@@ -531,7 +544,8 @@ class _DeviceListPageState extends State<DeviceListPage> {
                                     ),
                                     const SizedBox(height: 4),
                                     Text(
-                                      '实时可连接 ${_liveList.length} · 历史记录 ${_history.length}',
+                                      '实时可连接 ${_liveList.length} · 历史记录 ${_history.length}'
+                                      ' · ${AppEnv.flavorLabel}',
                                       style: const TextStyle(
                                         color: Color(0xFF5A6F6D),
                                         fontSize: 13,
