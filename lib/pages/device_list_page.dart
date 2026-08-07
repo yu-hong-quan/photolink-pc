@@ -42,6 +42,10 @@ class _DeviceListPageState extends State<DeviceListPage> {
   String? _scanError;
   String? _pairError;
   final _autoRescanTimers = <Timer>[];
+  /// 防止配对回调与手动点击并发重复进相册
+  bool _connecting = false;
+  /// 当前是否已打开相册页（配对自动连接时避免叠多层）
+  bool _galleryOpen = false;
 
   @override
   void initState() {
@@ -113,19 +117,30 @@ class _DeviceListPageState extends State<DeviceListPage> {
       _pairSub = _pairService.pairedPhoneStream.listen((phone) async {
         if (!mounted) return;
         _upsertLive(phone);
-        // 扫码配对即记入历史，便于下次快速找到
+        // 扫码 / 搜电脑配对即记入历史，便于下次快速找到
         _history = await DeviceHistoryStore.instance.upsert(phone);
         if (!mounted) return;
         setState(() {});
+
+        // 已在浏览相册：只提示，不叠一层；否则配对成功后自动连接
+        if (_galleryOpen || _connecting) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                '手机「${phone.deviceName}」已重新配对（${phone.ip}:${phone.port}）',
+              ),
+            ),
+          );
+          return;
+        }
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('手机「${phone.deviceName}」已扫码配对（${phone.ip}:${phone.port}）'),
-            action: SnackBarAction(
-              label: '立即连接',
-              onPressed: () => _connect(phone),
+            content: Text(
+              '手机「${phone.deviceName}」已配对，正在自动连接…',
             ),
           ),
         );
+        await _connect(phone);
       });
       if (mounted) {
         setState(() {
@@ -255,6 +270,8 @@ class _DeviceListPageState extends State<DeviceListPage> {
   }
 
   Future<void> _connect(DeviceInfoModel device) async {
+    if (_connecting) return;
+    _connecting = true;
     final api = GalleryApiService(device);
     try {
       showDialog<void>(
@@ -280,6 +297,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
       if (!mounted) return;
       setState(() {});
 
+      _galleryOpen = true;
       await Navigator.of(context).push(
         PageRouteBuilder(
           pageBuilder: (context, animation, secondaryAnimation) =>
@@ -313,6 +331,8 @@ class _DeviceListPageState extends State<DeviceListPage> {
         );
       }
     } finally {
+      _galleryOpen = false;
+      _connecting = false;
       api.close();
     }
   }
