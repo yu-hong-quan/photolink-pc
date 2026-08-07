@@ -23,7 +23,7 @@ class PhotoLinkConst {
   static const int defaultPageSize = 60;
 
   /// 作者信息（关于页展示）
-  static const String authorName = '余洪权';
+  static const String authorName = '余洪全';
   static const String authorId = 'yu-hong-quan';
   static const String authorGithub = 'https://github.com/yu-hong-quan';
   static const String authorEmail = '';
