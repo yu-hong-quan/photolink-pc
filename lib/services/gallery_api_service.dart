@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
 
@@ -32,11 +33,16 @@ class GalleryApiService {
   Future<({List<PhotoMeta> list, int total, int page})> listPhotos({
     int page = 0,
     int pageSize = PhotoLinkConst.defaultPageSize,
+    String? albumId,
   }) async {
-    final res = await _client.get('/api/gallery/list', query: {
+    final query = <String, String>{
       'page': '$page',
       'pageSize': '$pageSize',
-    });
+    };
+    if (albumId != null && albumId.isNotEmpty) {
+      query['albumId'] = albumId;
+    }
+    final res = await _client.get('/api/gallery/list', query: query);
     if (res.statusCode != 200) {
       throw Exception('拉取相册失败 HTTP ${res.statusCode}');
     }
@@ -44,6 +50,8 @@ class GalleryApiService {
     final list = (map['list'] as List? ?? [])
         .map((e) => PhotoMeta.fromJson(e as Map<String, dynamic>))
         .toList();
+    // 客户端兜底：最近的在前
+    list.sort((a, b) => b.createTimeMs.compareTo(a.createTimeMs));
     return (
       list: list,
       total: int.tryParse('${map['total']}') ?? list.length,
@@ -51,8 +59,37 @@ class GalleryApiService {
     );
   }
 
+  Future<List<Map<String, dynamic>>> listAlbums() async {
+    final res = await _client.get('/api/gallery/albums');
+    if (res.statusCode != 200) {
+      throw Exception('拉取相册分类失败 HTTP ${res.statusCode}');
+    }
+    final map = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    return (map['list'] as List? ?? [])
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+  }
+
   String thumbnailUrl(String photoId) =>
       '${device.baseUrl}/api/gallery/thumbnail/${Uri.encodeComponent(photoId)}';
+
+  String originalUrl(String photoId) =>
+      '${device.baseUrl}/api/gallery/original/${Uri.encodeComponent(photoId)}';
+
+  /// 预览用：拉取原图字节（带简单超时；大图由调用方注意内存）
+  Future<Uint8List> fetchOriginalBytes(String photoId) async {
+    final streamed = await _client.getStream(
+      '/api/gallery/original/${Uri.encodeComponent(photoId)}',
+    );
+    if (streamed.statusCode != 200) {
+      throw Exception('预览原图失败 HTTP ${streamed.statusCode}');
+    }
+    final builder = BytesBuilder(copy: false);
+    await for (final chunk in streamed.stream) {
+      builder.add(chunk);
+    }
+    return builder.takeBytes();
+  }
 
   /// 流式下载原图；[token] 可中途取消
   Future<File> downloadOriginal({
@@ -94,13 +131,75 @@ class GalleryApiService {
     }
   }
 
+  /// 软删除（进回收站；需手机端确认，超时放宽到 2.5 分钟）
   Future<void> deletePhotos(List<String> photoIds) async {
     final res = await _client.postJson(
       '/api/gallery/delete',
       jsonEncode({'photoIds': photoIds}),
+      timeout: const Duration(minutes: 2, seconds: 30),
     );
+    if (res.statusCode == 403) {
+      throw Exception('手机端拒绝或未确认删除');
+    }
     if (res.statusCode != 200) {
       throw Exception('删除失败 HTTP ${res.statusCode}');
+    }
+  }
+
+  Future<void> renamePhoto(String photoId, String title) async {
+    final res = await _client.postJson(
+      '/api/gallery/rename',
+      jsonEncode({'photoId': photoId, 'title': title}),
+    );
+    if (res.statusCode != 200) {
+      throw Exception('重命名失败 HTTP ${res.statusCode}');
+    }
+  }
+
+  Future<void> categorizePhotos({
+    required List<String> photoIds,
+    required String albumName,
+  }) async {
+    final res = await _client.postJson(
+      '/api/gallery/categorize',
+      jsonEncode({'photoIds': photoIds, 'albumName': albumName}),
+    );
+    if (res.statusCode != 200) {
+      throw Exception('归类失败 HTTP ${res.statusCode}');
+    }
+  }
+
+  Future<List<Map<String, dynamic>>> listTrash() async {
+    final res = await _client.get('/api/trash/list');
+    if (res.statusCode != 200) {
+      throw Exception('拉取回收站失败 HTTP ${res.statusCode}');
+    }
+    final map = jsonDecode(utf8.decode(res.bodyBytes)) as Map<String, dynamic>;
+    return (map['list'] as List? ?? [])
+        .map((e) => Map<String, dynamic>.from(e as Map))
+        .toList();
+  }
+
+  String trashThumbUrl(String trashId) =>
+      '${device.baseUrl}/api/trash/thumbnail/${Uri.encodeComponent(trashId)}';
+
+  Future<void> restoreTrash(List<String> trashIds) async {
+    final res = await _client.postJson(
+      '/api/trash/restore',
+      jsonEncode({'trashIds': trashIds}),
+    );
+    if (res.statusCode != 200) {
+      throw Exception('恢复失败 HTTP ${res.statusCode}');
+    }
+  }
+
+  Future<void> purgeTrash(List<String> trashIds) async {
+    final res = await _client.postJson(
+      '/api/trash/purge',
+      jsonEncode({'trashIds': trashIds}),
+    );
+    if (res.statusCode != 200) {
+      throw Exception('彻底删除失败 HTTP ${res.statusCode}');
     }
   }
 

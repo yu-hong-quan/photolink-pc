@@ -6,6 +6,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../core/constants.dart';
 import '../core/models/device_info.dart';
+import '../services/device_history_store.dart';
 import '../services/gallery_api_service.dart';
 import '../services/mdns_discovery_service.dart';
 import '../services/pc_pair_service.dart';
@@ -13,7 +14,7 @@ import '../theme/app_theme.dart';
 import '../widgets/motion.dart';
 import 'gallery_page.dart';
 
-/// PC 设备列表：配对二维码 + 自动发现 + 手动连接
+/// PC 设备列表：实时可连接设备 + 历史连接记录
 class DeviceListPage extends StatefulWidget {
   const DeviceListPage({super.key});
 
@@ -26,7 +27,14 @@ class _DeviceListPageState extends State<DeviceListPage> {
   final _pairService = PcPairService();
   StreamSubscription<List<DeviceInfoModel>>? _sub;
   StreamSubscription<DeviceInfoModel>? _pairSub;
-  final _devices = <String, DeviceInfoModel>{};
+
+  /// 当前局域网实时可见（mDNS / 刚扫码配对）
+  final _liveDevices = <String, DeviceInfoModel>{};
+  /// 扫码/手动刚加入的实时设备，短时保活（避免 mDNS 尚未广播就被冲掉）
+  final _stickyLiveUntil = <String, DateTime>{};
+  /// 本地持久化的连接记录
+  List<DeviceHistoryEntry> _history = [];
+
   DeviceInfoModel? _pcInfo;
   bool _scanning = true;
   String? _scanError;
@@ -48,6 +56,8 @@ class _DeviceListPageState extends State<DeviceListPage> {
   }
 
   Future<void> _bootstrap() async {
+    _history = await DeviceHistoryStore.instance.load();
+    if (mounted) setState(() {});
     await Future.wait([_startPairServer(), _startScan()]);
   }
 
@@ -55,9 +65,13 @@ class _DeviceListPageState extends State<DeviceListPage> {
     try {
       final info = await _pairService.start();
       _pairSub?.cancel();
-      _pairSub = _pairService.pairedPhoneStream.listen((phone) {
+      _pairSub = _pairService.pairedPhoneStream.listen((phone) async {
         if (!mounted) return;
-        _upsertDevice(phone);
+        _upsertLive(phone);
+        // 扫码配对即记入历史，便于下次快速找到
+        _history = await DeviceHistoryStore.instance.upsert(phone);
+        if (!mounted) return;
+        setState(() {});
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('手机「${phone.deviceName}」已扫码配对（${phone.ip}:${phone.port}）'),
@@ -91,10 +105,22 @@ class _DeviceListPageState extends State<DeviceListPage> {
       _sub?.cancel();
       _sub = _discovery.devicesStream.listen((list) {
         if (!mounted) return;
+        final now = DateTime.now();
+        final next = <String, DeviceInfoModel>{};
         for (final d in list) {
-          _upsertDevice(d, notify: false);
+          next[_keyOf(d)] = d;
         }
-        setState(() {});
+        // 刚扫码/手动加入的设备短时保留在「实时」区
+        _stickyLiveUntil.removeWhere((_, until) => until.isBefore(now));
+        for (final key in _stickyLiveUntil.keys) {
+          final cached = _liveDevices[key];
+          if (cached != null) next.putIfAbsent(key, () => cached);
+        }
+        setState(() {
+          _liveDevices
+            ..clear()
+            ..addAll(next);
+        });
       });
       await _discovery.start();
     } catch (e) {
@@ -104,15 +130,30 @@ class _DeviceListPageState extends State<DeviceListPage> {
     }
   }
 
-  void _upsertDevice(DeviceInfoModel device, {bool notify = true}) {
-    final key = device.deviceId.isNotEmpty
-        ? device.deviceId
-        : '${device.ip}:${device.port}';
-    _devices[key] = device;
+  String _keyOf(DeviceInfoModel device) => DeviceHistoryStore.keyOf(device);
+
+  void _upsertLive(DeviceInfoModel device, {bool notify = true}) {
+    final key = _keyOf(device);
+    _liveDevices[key] = device;
+    _stickyLiveUntil[key] = DateTime.now().add(const Duration(minutes: 5));
     if (notify && mounted) setState(() {});
   }
 
-  List<DeviceInfoModel> get _deviceList => _devices.values.toList();
+  /// 实时列表：当前在线/刚配对
+  List<DeviceInfoModel> get _liveList => _liveDevices.values.toList();
+
+  /// 历史中不在实时列表里的记录（离线记录）
+  List<DeviceHistoryEntry> get _historyOnly {
+    final liveKeys = _liveDevices.keys.toSet();
+    return _history
+        .where((e) => !liveKeys.contains(_keyOf(e.device)))
+        .toList();
+  }
+
+  Future<void> _removeHistory(DeviceHistoryEntry entry) async {
+    _history = await DeviceHistoryStore.instance.remove(_keyOf(entry.device));
+    if (mounted) setState(() {});
+  }
 
   Future<void> _connect(DeviceInfoModel device) async {
     final api = GalleryApiService(device);
@@ -134,6 +175,12 @@ class _DeviceListPageState extends State<DeviceListPage> {
         ip: device.ip,
         port: device.port,
       );
+      // 连接成功：写入实时 + 历史记录
+      _upsertLive(merged);
+      _history = await DeviceHistoryStore.instance.upsert(merged);
+      if (!mounted) return;
+      setState(() {});
+
       await Navigator.of(context).push(
         PageRouteBuilder(
           pageBuilder: (context, animation, secondaryAnimation) =>
@@ -242,7 +289,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
     );
 
     if (device != null) {
-      _upsertDevice(device);
+      _upsertLive(device);
       await _connect(device);
     }
   }
@@ -374,21 +421,21 @@ class _DeviceListPageState extends State<DeviceListPage> {
                                     : PhotoLinkTheme.brand,
                               ),
                               const SizedBox(width: 12),
-                              const Expanded(
+                              Expanded(
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text(
+                                    const Text(
                                       '设备列表',
                                       style: TextStyle(
                                         fontSize: 17,
                                         fontWeight: FontWeight.w700,
                                       ),
                                     ),
-                                    SizedBox(height: 4),
+                                    const SizedBox(height: 4),
                                     Text(
-                                      '手机扫左侧二维码配对，或等待自动发现',
-                                      style: TextStyle(
+                                      '实时可连接 ${_liveList.length} · 历史记录 ${_history.length}',
+                                      style: const TextStyle(
                                         color: Color(0xFF5A6F6D),
                                         fontSize: 13,
                                       ),
@@ -432,27 +479,21 @@ class _DeviceListPageState extends State<DeviceListPage> {
   }
 
   Widget _buildDeviceBody() {
-    if (_deviceList.isEmpty) {
+    final live = _liveList;
+    final historyOnly = _historyOnly;
+    if (live.isEmpty && historyOnly.isEmpty) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            TweenAnimationBuilder<double>(
-              tween: Tween(begin: 0.92, end: 1),
-              duration: const Duration(milliseconds: 900),
-              curve: Curves.easeInOut,
-              builder: (context, value, child) {
-                return Transform.scale(scale: value, child: child);
-              },
-              child: Icon(
-                Icons.phonelink_setup_rounded,
-                size: 64,
-                color: PhotoLinkTheme.brand.withValues(alpha: 0.35),
-              ),
+            Icon(
+              Icons.phonelink_setup_rounded,
+              size: 64,
+              color: PhotoLinkTheme.brand.withValues(alpha: 0.35),
             ),
             const SizedBox(height: 16),
             const Text(
-              '暂未发现 / 配对手机',
+              '暂无实时设备与连接记录',
               style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 8),
@@ -473,76 +514,265 @@ class _DeviceListPageState extends State<DeviceListPage> {
       );
     }
 
-    return ListView.separated(
+    return ListView(
       padding: const EdgeInsets.all(16),
-      itemCount: _deviceList.length,
-      separatorBuilder: (context, index) => const SizedBox(height: 10),
-      itemBuilder: (context, index) {
-        final d = _deviceList[index];
-        return FadeSlideIn(
-          delay: Duration(milliseconds: 40 * index),
-          offsetY: 10,
-          child: Material(
-            color: const Color(0xFFF8FBFA),
-            borderRadius: BorderRadius.circular(16),
-            child: InkWell(
-              borderRadius: BorderRadius.circular(16),
-              onTap: () => _connect(d),
-              child: Padding(
-                padding: const EdgeInsets.all(14),
-                child: Row(
+      children: [
+        _SectionTitle(
+          title: '实时可连接',
+          subtitle: live.isEmpty ? '当前未发现在线手机' : 'mDNS 发现或刚扫码配对',
+          badge: live.length,
+          online: true,
+        ),
+        const SizedBox(height: 10),
+        if (live.isEmpty)
+          const _EmptyHint(text: '等待手机扫码或局域网自动发现…')
+        else
+          ...List.generate(live.length, (index) {
+            final d = live[index];
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: _DeviceTile(
+                device: d,
+                live: true,
+                onConnect: () => _connect(d),
+              ),
+            );
+          }),
+        const SizedBox(height: 18),
+        _SectionTitle(
+          title: '连接记录',
+          subtitle: historyOnly.isEmpty
+              ? (_history.isEmpty ? '连接成功后会自动保存' : '记录中的设备均在线，见上方')
+              : '曾连接过，当前未在实时列表中',
+          badge: _history.length,
+          online: false,
+        ),
+        const SizedBox(height: 10),
+        if (historyOnly.isEmpty)
+          _EmptyHint(
+            text: _history.isEmpty ? '暂无历史记录' : '历史设备均已出现在「实时可连接」',
+          )
+        else
+          ...List.generate(historyOnly.length, (index) {
+            final entry = historyOnly[index];
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: _DeviceTile(
+                device: entry.device,
+                live: false,
+                lastConnectedAtMs: entry.lastConnectedAtMs,
+                onConnect: () => _connect(entry.device),
+                onRemove: () => _removeHistory(entry),
+              ),
+            );
+          }),
+      ],
+    );
+  }
+}
+
+class _SectionTitle extends StatelessWidget {
+  const _SectionTitle({
+    required this.title,
+    required this.subtitle,
+    required this.badge,
+    required this.online,
+  });
+
+  final String title;
+  final String subtitle;
+  final int badge;
+  final bool online;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: online ? const Color(0xFF1FA87A) : const Color(0xFF9AABA8),
+          ),
+        ),
+        const SizedBox(width: 8),
+        Text(
+          title,
+          style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 15),
+        ),
+        const SizedBox(width: 8),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+          decoration: BoxDecoration(
+            color: online
+                ? const Color(0xFF1FA87A).withValues(alpha: 0.12)
+                : Colors.black12,
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Text('$badge', style: const TextStyle(fontSize: 12)),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            subtitle,
+            style: const TextStyle(color: Color(0xFF8A9C9A), fontSize: 12),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _EmptyHint extends StatelessWidget {
+  const _EmptyHint({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF3F7F6),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Text(text, style: const TextStyle(color: Color(0xFF5A6F6D))),
+    );
+  }
+}
+
+class _DeviceTile extends StatelessWidget {
+  const _DeviceTile({
+    required this.device,
+    required this.live,
+    required this.onConnect,
+    this.lastConnectedAtMs,
+    this.onRemove,
+  });
+
+  final DeviceInfoModel device;
+  final bool live;
+  final VoidCallback onConnect;
+  final int? lastConnectedAtMs;
+  final VoidCallback? onRemove;
+
+  String? get _timeHint {
+    final ms = lastConnectedAtMs;
+    if (ms == null || ms <= 0) return null;
+    final dt = DateTime.fromMillisecondsSinceEpoch(ms);
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '上次连接 ${dt.year}-${two(dt.month)}-${two(dt.day)} '
+        '${two(dt.hour)}:${two(dt.minute)}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: live ? const Color(0xFFF8FBFA) : const Color(0xFFF5F5F5),
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onConnect,
+        child: Padding(
+          padding: const EdgeInsets.all(14),
+          child: Row(
+            children: [
+              Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(14),
+                  color: (live ? PhotoLinkTheme.brand : Colors.grey)
+                      .withValues(alpha: 0.12),
+                ),
+                child: Icon(
+                  Icons.phone_android_rounded,
+                  color: live ? PhotoLinkTheme.brand : Colors.grey,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Container(
-                      width: 48,
-                      height: 48,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(14),
-                        color: PhotoLinkTheme.brand.withValues(alpha: 0.12),
-                      ),
-                      child: const Icon(
-                        Icons.phone_android_rounded,
-                        color: PhotoLinkTheme.brand,
-                      ),
-                    ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            d.deviceName,
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            device.deviceName,
                             style: const TextStyle(
                               fontWeight: FontWeight.w700,
                               fontSize: 15,
                             ),
+                            overflow: TextOverflow.ellipsis,
                           ),
-                          const SizedBox(height: 4),
-                          Text(
-                            '${d.ip}:${d.port}',
-                            style: const TextStyle(color: Color(0xFF5A6F6D)),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
                           ),
-                          if (d.osVersion.isNotEmpty)
-                            Text(
-                              d.osVersion,
-                              style: const TextStyle(
-                                color: Color(0xFF8A9C9A),
-                                fontSize: 12,
-                              ),
+                          decoration: BoxDecoration(
+                            color: live
+                                ? const Color(0xFF1FA87A).withValues(alpha: 0.15)
+                                : Colors.black12,
+                            borderRadius: BorderRadius.circular(8),
+                          ),
+                          child: Text(
+                            live ? '在线' : '离线记录',
+                            style: TextStyle(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              color: live
+                                  ? const Color(0xFF1FA87A)
+                                  : const Color(0xFF6A7A78),
                             ),
-                        ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${device.ip}:${device.port}',
+                      style: const TextStyle(color: Color(0xFF5A6F6D)),
+                    ),
+                    if (_timeHint != null)
+                      Text(
+                        _timeHint!,
+                        style: const TextStyle(
+                          color: Color(0xFF8A9C9A),
+                          fontSize: 12,
+                        ),
+                      )
+                    else if (device.osVersion.isNotEmpty)
+                      Text(
+                        device.osVersion,
+                        style: const TextStyle(
+                          color: Color(0xFF8A9C9A),
+                          fontSize: 12,
+                        ),
                       ),
-                    ),
-                    FilledButton(
-                      onPressed: () => _connect(d),
-                      child: const Text('连接'),
-                    ),
                   ],
                 ),
               ),
-            ),
+              if (onRemove != null)
+                IconButton(
+                  tooltip: '删除记录',
+                  onPressed: onRemove,
+                  icon: const Icon(Icons.delete_outline_rounded),
+                ),
+              FilledButton(
+                onPressed: onConnect,
+                child: Text(live ? '连接' : '重连'),
+              ),
+            ],
           ),
-        );
-      },
+        ),
+      ),
     );
   }
 }

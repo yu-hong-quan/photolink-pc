@@ -1,0 +1,275 @@
+import 'dart:typed_data';
+
+import 'package:flutter/material.dart';
+
+import '../core/models/device_info.dart';
+import '../services/api_client.dart';
+import '../services/gallery_api_service.dart';
+import '../services/thumbnail_cache.dart';
+import '../theme/app_theme.dart';
+
+/// 回收站：查看软删图片、恢复、彻底删除（彻底删除后 PC 也不留存缩略图）
+class TrashPage extends StatefulWidget {
+  const TrashPage({
+    super.key,
+    required this.device,
+    required this.deviceKey,
+  });
+
+  final DeviceInfoModel device;
+  final String deviceKey;
+
+  @override
+  State<TrashPage> createState() => _TrashPageState();
+}
+
+class _TrashPageState extends State<TrashPage> {
+  late final GalleryApiService _api;
+  final _items = <Map<String, dynamic>>[];
+  final _selected = <String>{};
+  final _thumbs = <String, Uint8List>{};
+  bool _loading = true;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _api = GalleryApiService(widget.device);
+    _reload();
+  }
+
+  @override
+  void dispose() {
+    _api.close();
+    super.dispose();
+  }
+
+  Future<void> _reload() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+      _selected.clear();
+    });
+    try {
+      final list = await _api.listTrash();
+      if (!mounted) return;
+      setState(() {
+        _items
+          ..clear()
+          ..addAll(list);
+      });
+    } catch (e) {
+      if (mounted) setState(() => _error = '$e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  /// 仅在格子可见构建时拉取缩略图（懒加载）
+  Future<void> _ensureThumb(String trashId) async {
+    if (_thumbs.containsKey(trashId)) return;
+    try {
+      final client = createPhotoLinkHttpClient();
+      final res = await client.get(Uri.parse(_api.trashThumbUrl(trashId)));
+      client.close();
+      if (res.statusCode == 200 && mounted) {
+        setState(() => _thumbs[trashId] = res.bodyBytes);
+      }
+    } catch (_) {}
+  }
+
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
+
+  Future<void> _restore() async {
+    if (_selected.isEmpty) return;
+    try {
+      await _api.restoreTrash(_selected.toList());
+      _toast('已恢复 ${_selected.length} 张到相册');
+      await _reload();
+    } catch (e) {
+      _toast('恢复失败：$e');
+    }
+  }
+
+  Future<void> _purge() async {
+    if (_selected.isEmpty) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('彻底删除'),
+        content: Text(
+          '将永久删除 ${_selected.length} 张图片，手机与电脑均不再保留，无法撤回。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('彻底删除'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      final ids = _selected.toList();
+      // 彻底删除前记下原图 id，清掉 PC 本地缩略图（不留存）
+      final photoIds = _items
+          .where((e) => ids.contains('${e['id']}'))
+          .map((e) => '${e['originalPhotoId'] ?? ''}')
+          .where((e) => e.isNotEmpty)
+          .toList();
+      await _api.purgeTrash(ids);
+      for (final photoId in photoIds) {
+        await ThumbnailCache.instance.remove(widget.deviceKey, photoId);
+      }
+      for (final trashId in ids) {
+        _thumbs.remove(trashId);
+      }
+      _toast('已彻底删除');
+      await _reload();
+    } catch (e) {
+      _toast('彻底删除失败：$e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF3F7F6),
+      appBar: AppBar(
+        title: const Text('回收站'),
+        actions: [
+          if (_selected.isNotEmpty) ...[
+            TextButton.icon(
+              onPressed: _restore,
+              icon: const Icon(Icons.restore_rounded),
+              label: Text('撤回(${_selected.length})'),
+            ),
+            TextButton.icon(
+              onPressed: _purge,
+              icon: const Icon(Icons.delete_forever_rounded),
+              label: Text('彻底删除(${_selected.length})'),
+            ),
+          ],
+          IconButton(
+            tooltip: '刷新',
+            onPressed: _reload,
+            icon: const Icon(Icons.refresh_rounded),
+          ),
+        ],
+      ),
+      body: _buildBody(),
+    );
+  }
+
+  Widget _buildBody() {
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+    if (_error != null) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(_error!, textAlign: TextAlign.center),
+            const SizedBox(height: 12),
+            FilledButton(onPressed: _reload, child: const Text('重试')),
+          ],
+        ),
+      );
+    }
+    if (_items.isEmpty) {
+      return const Center(
+        child: Text(
+          '回收站为空',
+          style: TextStyle(color: Color(0xFF5A6F6D)),
+        ),
+      );
+    }
+    return GridView.builder(
+      padding: const EdgeInsets.all(12),
+      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+        maxCrossAxisExtent: 180,
+        mainAxisSpacing: 10,
+        crossAxisSpacing: 10,
+      ),
+      itemCount: _items.length,
+      itemBuilder: (context, index) {
+        final item = _items[index];
+        // 与 App TrashItem.toJson 字段对齐：id / title / originalPhotoId
+        final trashId = '${item['id']}';
+        final title = '${item['title'] ?? trashId}';
+        final selected = _selected.contains(trashId);
+        _ensureThumb(trashId);
+        final bytes = _thumbs[trashId];
+        return Material(
+          color: Colors.black12,
+          borderRadius: BorderRadius.circular(14),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: () {
+              setState(() {
+                if (selected) {
+                  _selected.remove(trashId);
+                } else {
+                  _selected.add(trashId);
+                }
+              });
+            },
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                bytes == null
+                    ? const Center(child: Icon(Icons.image_outlined))
+                    : Image.memory(bytes, fit: BoxFit.cover),
+                Container(
+                  decoration: BoxDecoration(
+                    border: Border.all(
+                      color: selected
+                          ? PhotoLinkTheme.brand
+                          : Colors.transparent,
+                      width: 3,
+                    ),
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
+                Positioned(
+                  left: 6,
+                  right: 6,
+                  bottom: 6,
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 11,
+                      shadows: [Shadow(blurRadius: 4, color: Colors.black)],
+                    ),
+                  ),
+                ),
+                Positioned(
+                  top: 6,
+                  right: 6,
+                  child: Icon(
+                    selected
+                        ? Icons.check_circle_rounded
+                        : Icons.circle_outlined,
+                    color: selected ? PhotoLinkTheme.brand : Colors.white,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+}

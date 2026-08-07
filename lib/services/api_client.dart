@@ -36,14 +36,18 @@ class PhotoLinkApiClient {
     return _client.get(_uri(path, query)).timeout(const Duration(seconds: 20));
   }
 
-  Future<http.Response> postJson(String path, String jsonBody) {
+  Future<http.Response> postJson(
+    String path,
+    String jsonBody, {
+    Duration timeout = const Duration(seconds: 30),
+  }) {
     return _client
         .post(
           _uri(path),
           headers: {'Content-Type': 'application/json; charset=utf-8'},
           body: jsonBody,
         )
-        .timeout(const Duration(seconds: 30));
+        .timeout(timeout);
   }
 
   Future<http.StreamedResponse> postBytesStream({

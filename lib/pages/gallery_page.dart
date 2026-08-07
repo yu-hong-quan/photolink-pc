@@ -18,8 +18,9 @@ import '../services/thumbnail_cache.dart';
 import '../services/transfer_task_queue.dart';
 import '../theme/app_theme.dart';
 import '../widgets/task_queue_panel.dart';
+import 'trash_page.dart';
 
-/// 手机相册浏览：网格、多选删除、批量下载、拖拽上传、任务队列
+/// 手机相册浏览：懒加载网格、原图预览、软删、重命名/归类、回收站入口
 class GalleryPage extends StatefulWidget {
   const GalleryPage({super.key, required this.device});
 
@@ -37,7 +38,9 @@ class _GalleryPageState extends State<GalleryPage> {
   final _photos = <PhotoMeta>[];
   final _selected = <String>{};
   final _thumbCache = <String, Uint8List>{};
+  final _thumbLoading = <String>{};
   final _scroll = ScrollController();
+  final _albums = <Map<String, dynamic>>[];
 
   int _page = 0;
   int _total = 0;
@@ -46,6 +49,7 @@ class _GalleryPageState extends State<GalleryPage> {
   bool _dragging = false;
   String? _error;
   bool _disconnectDialogShowing = false;
+  String? _albumId;
 
   String get _deviceKey =>
       widget.device.deviceId.isNotEmpty
@@ -60,7 +64,6 @@ class _GalleryPageState extends State<GalleryPage> {
     _watchdog = ConnectionWatchdog(device: widget.device)..start();
     _watchdog.addListener(_onConnectionChanged);
     _scroll.addListener(_onScroll);
-    // 后台清理过期缩略图缓存
     ThumbnailCache.instance.purgeOlderThan();
     _bootstrap();
   }
@@ -130,6 +133,18 @@ class _GalleryPageState extends State<GalleryPage> {
     });
     try {
       await _api.fetchDeviceInfo();
+      try {
+        final albums = await _api.listAlbums();
+        if (mounted) {
+          setState(() {
+            _albums
+              ..clear()
+              ..addAll(albums);
+          });
+        }
+      } catch (_) {
+        // 旧版手机端可能无 albums API，忽略即可
+      }
       await _loadPage(reset: true);
     } catch (e) {
       setState(() => _error = '连接失败：$e');
@@ -144,26 +159,25 @@ class _GalleryPageState extends State<GalleryPage> {
       _photos.clear();
       _selected.clear();
     }
-    final result = await _api.listPhotos(page: _page);
+    // 不整页预取缩略图：由 GridView.builder 可见时懒加载
+    final result = await _api.listPhotos(page: _page, albumId: _albumId);
     if (!mounted) return;
     setState(() {
       _total = result.total;
       _photos.addAll(result.list);
     });
-    for (final photo in result.list) {
-      _prefetchThumb(photo.id);
-    }
   }
 
-  Future<void> _prefetchThumb(String id) async {
-    if (_thumbCache.containsKey(id)) return;
-    // 先读本地磁盘缓存
-    final cached = await ThumbnailCache.instance.get(_deviceKey, id);
-    if (cached != null && mounted) {
-      setState(() => _thumbCache[id] = cached);
-      return;
-    }
+  /// 仅当格子构建到时才请求/读缓存缩略图
+  Future<void> _ensureThumb(String id) async {
+    if (_thumbCache.containsKey(id) || _thumbLoading.contains(id)) return;
+    _thumbLoading.add(id);
     try {
+      final cached = await ThumbnailCache.instance.get(_deviceKey, id);
+      if (cached != null && mounted) {
+        setState(() => _thumbCache[id] = cached);
+        return;
+      }
       final client = createPhotoLinkHttpClient();
       final res = await client.get(Uri.parse(_api.thumbnailUrl(id)));
       client.close();
@@ -172,7 +186,10 @@ class _GalleryPageState extends State<GalleryPage> {
         await ThumbnailCache.instance.put(_deviceKey, id, bytes);
         if (mounted) setState(() => _thumbCache[id] = bytes);
       }
-    } catch (_) {}
+    } catch (_) {
+    } finally {
+      _thumbLoading.remove(id);
+    }
   }
 
   void _onScroll() {
@@ -210,29 +227,171 @@ class _GalleryPageState extends State<GalleryPage> {
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('确认删除'),
+        title: const Text('移入回收站'),
         content: Text(
-          '将从手机相册删除 ${_selected.length} 张照片，此操作不可恢复。是否继续？',
+          '将 ${_selected.length} 张照片移入回收站（可撤回）。'
+          '彻底删除需在回收站中操作。',
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('取消')),
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('删除'),
+            child: const Text('移入回收站'),
           ),
         ],
       ),
     );
     if (ok != true) return;
     try {
+      _toast('等待手机确认删除…');
       await _api.deletePhotos(_selected.toList());
-      _toast('删除成功');
+      _toast('手机已确认，已移入回收站');
       await _loadPage(reset: true);
     } catch (e) {
-      _toast('删除失败：$e');
+      _toast('删除失败（手机拒绝/超时/网络）：$e');
     }
+  }
+
+  Future<void> _renameSelected() async {
+    if (_selected.length != 1) {
+      _toast('请先只选择一张图片再重命名');
+      return;
+    }
+    final id = _selected.first;
+    final current = _photos.firstWhere(
+      (e) => e.id == id,
+      orElse: () => PhotoMeta(
+        id: id,
+        width: 0,
+        height: 0,
+        createTimeMs: 0,
+      ),
+    );
+    final controller = TextEditingController(text: current.title ?? '');
+    final title = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('重命名'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: '显示名称',
+            hintText: '输入新名称',
+          ),
+          onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('保存'),
+          ),
+        ],
+      ),
+    );
+    if (title == null || title.isEmpty) return;
+    try {
+      await _api.renamePhoto(id, title);
+      _toast('已重命名');
+      await _loadPage(reset: true);
+    } catch (e) {
+      _toast('重命名失败：$e');
+    }
+  }
+
+  Future<void> _categorizeSelected() async {
+    if (_selected.isEmpty) return;
+    final controller = TextEditingController();
+    final albumName = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('归类到相册'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text('将 ${_selected.length} 张图片归入手机相册分类（同步到系统相册）'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              autofocus: true,
+              decoration: const InputDecoration(
+                labelText: '相册名称',
+                hintText: '例如：旅行 / 工作',
+              ),
+              onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+            ),
+            if (_albums.where((e) => e['isAll'] != true).isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 6,
+                runSpacing: 6,
+                children: _albums
+                    .where((e) => e['isAll'] != true)
+                    .take(8)
+                    .map((e) {
+                  final name = '${e['name'] ?? ''}';
+                  return ActionChip(
+                    label: Text(name),
+                    onPressed: () => Navigator.pop(ctx, name),
+                  );
+                }).toList(),
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, controller.text.trim()),
+            child: const Text('归类'),
+          ),
+        ],
+      ),
+    );
+    if (albumName == null || albumName.isEmpty) return;
+    try {
+      await _api.categorizePhotos(
+        photoIds: _selected.toList(),
+        albumName: albumName,
+      );
+      _toast('已归类到「$albumName」');
+      try {
+        final albums = await _api.listAlbums();
+        if (mounted) {
+          setState(() {
+            _albums
+              ..clear()
+              ..addAll(albums);
+          });
+        }
+      } catch (_) {}
+      await _loadPage(reset: true);
+    } catch (e) {
+      _toast('归类失败：$e');
+    }
+  }
+
+  Future<void> _openTrash() async {
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => TrashPage(
+          device: widget.device,
+          deviceKey: _deviceKey,
+        ),
+      ),
+    );
+    if (mounted) await _loadPage(reset: true);
   }
 
   Directory? _saveDir;
@@ -306,7 +465,6 @@ class _GalleryPageState extends State<GalleryPage> {
     }).toList();
     _queue.enqueueAll(tasks);
     _toast('已加入 ${tasks.length} 个上传任务');
-    // 上传完成后刷新列表：监听队列
     _watchUploadsThenRefresh(tasks.map((e) => e.id).toSet());
   }
 
@@ -351,6 +509,16 @@ class _GalleryPageState extends State<GalleryPage> {
     if (files.isNotEmpty) _uploadFiles(files);
   }
 
+  Future<void> _onAlbumChanged(String? albumId) async {
+    setState(() => _albumId = albumId);
+    setState(() => _loading = true);
+    try {
+      await _loadPage(reset: true);
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final connected = _watchdog.isConnected;
@@ -379,11 +547,26 @@ class _GalleryPageState extends State<GalleryPage> {
                 label: Text('下载(${_selected.length})'),
               ),
               TextButton.icon(
+                onPressed: _renameSelected,
+                icon: const Icon(Icons.drive_file_rename_outline_rounded),
+                label: const Text('重命名'),
+              ),
+              TextButton.icon(
+                onPressed: _categorizeSelected,
+                icon: const Icon(Icons.folder_special_rounded),
+                label: Text('归类(${_selected.length})'),
+              ),
+              TextButton.icon(
                 onPressed: _deleteSelected,
                 icon: const Icon(Icons.delete_outline_rounded),
-                label: Text('删除(${_selected.length})'),
+                label: Text('回收站(${_selected.length})'),
               ),
             ],
+            IconButton(
+              tooltip: '回收站',
+              onPressed: _openTrash,
+              icon: const Icon(Icons.delete_sweep_rounded),
+            ),
             IconButton(
               tooltip: '选择图片上传',
               onPressed: _pickAndUpload,
@@ -405,6 +588,9 @@ class _GalleryPageState extends State<GalleryPage> {
                   total: _total,
                   loaded: _photos.length,
                   connected: connected,
+                  albums: _albums,
+                  albumId: _albumId,
+                  onAlbumChanged: _onAlbumChanged,
                 ),
                 Expanded(child: _buildBody()),
                 TaskQueuePanel(queue: _queue),
@@ -482,6 +668,8 @@ class _GalleryPageState extends State<GalleryPage> {
     return GridView.builder(
       controller: _scroll,
       padding: const EdgeInsets.all(12),
+      // 缩小预缓存范围，更接近「可见才加载」
+      cacheExtent: 240,
       gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
         maxCrossAxisExtent: 180,
         mainAxisSpacing: 10,
@@ -494,6 +682,8 @@ class _GalleryPageState extends State<GalleryPage> {
         }
         final photo = _photos[index];
         final selected = _selected.contains(photo.id);
+        // 懒加载：仅在格子被构建时触发
+        _ensureThumb(photo.id);
         final bytes = _thumbCache[photo.id];
         return AnimatedScale(
           scale: selected ? 0.96 : 1,
@@ -505,11 +695,18 @@ class _GalleryPageState extends State<GalleryPage> {
             child: InkWell(
               onTap: () => _toggleSelect(photo.id),
               onDoubleTap: () => _preview(photo),
+              onSecondaryTap: () => _showPhotoMenu(photo),
               child: Stack(
                 fit: StackFit.expand,
                 children: [
                   bytes == null
-                      ? const Center(child: Icon(Icons.image_outlined))
+                      ? const Center(
+                          child: SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        )
                       : Image.memory(bytes, fit: BoxFit.cover),
                   AnimatedContainer(
                     duration: const Duration(milliseconds: 180),
@@ -523,6 +720,28 @@ class _GalleryPageState extends State<GalleryPage> {
                       borderRadius: BorderRadius.circular(14),
                     ),
                   ),
+                  if (photo.albumName != null && photo.albumName!.isNotEmpty)
+                    Positioned(
+                      left: 6,
+                      top: 6,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.black54,
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          photo.albumName!,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                          ),
+                        ),
+                      ),
+                    ),
                   Positioned(
                     top: 6,
                     right: 6,
@@ -557,43 +776,160 @@ class _GalleryPageState extends State<GalleryPage> {
     );
   }
 
+  Future<void> _showPhotoMenu(PhotoMeta photo) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.zoom_in_rounded),
+              title: const Text('预览原图'),
+              onTap: () => Navigator.pop(ctx, 'preview'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.drive_file_rename_outline_rounded),
+              title: const Text('重命名'),
+              onTap: () => Navigator.pop(ctx, 'rename'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.folder_special_rounded),
+              title: const Text('归类'),
+              onTap: () => Navigator.pop(ctx, 'categorize'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline_rounded),
+              title: const Text('移入回收站'),
+              onTap: () => Navigator.pop(ctx, 'trash'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (action == null) return;
+    setState(() {
+      _selected
+        ..clear()
+        ..add(photo.id);
+    });
+    switch (action) {
+      case 'preview':
+        await _preview(photo);
+        break;
+      case 'rename':
+        await _renameSelected();
+        break;
+      case 'categorize':
+        await _categorizeSelected();
+        break;
+      case 'trash':
+        await _deleteSelected();
+        break;
+    }
+  }
+
+  /// 原图预览（非缩略图），支持缩放
   Future<void> _preview(PhotoMeta photo) async {
-    final bytes = _thumbCache[photo.id];
     await showDialog<void>(
       context: context,
-      builder: (ctx) => Dialog(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 720, maxHeight: 720),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              AppBar(
-                title: Text(photo.title ?? photo.id),
-                automaticallyImplyLeading: false,
-                actions: [
-                  IconButton(
-                    onPressed: () {
-                      Navigator.pop(ctx);
-                      _enqueueDownload(photo);
-                    },
-                    icon: const Icon(Icons.download_rounded),
-                  ),
-                  IconButton(
-                    onPressed: () => Navigator.pop(ctx),
-                    icon: const Icon(Icons.close),
-                  ),
-                ],
-              ),
-              Flexible(
-                child: bytes == null
-                    ? const Padding(
-                        padding: EdgeInsets.all(48),
-                        child: CircularProgressIndicator(),
-                      )
-                    : InteractiveViewer(child: Image.memory(bytes)),
-              ),
-            ],
-          ),
+      builder: (ctx) => _OriginalPreviewDialog(
+        title: photo.title ?? photo.id,
+        loadBytes: () => _api.fetchOriginalBytes(photo.id),
+        onDownload: () {
+          Navigator.pop(ctx);
+          _enqueueDownload(photo);
+        },
+      ),
+    );
+  }
+}
+
+/// 独立 StatefulWidget，避免在 build 里反复触发原图请求
+class _OriginalPreviewDialog extends StatefulWidget {
+  const _OriginalPreviewDialog({
+    required this.title,
+    required this.loadBytes,
+    required this.onDownload,
+  });
+
+  final String title;
+  final Future<Uint8List> Function() loadBytes;
+  final VoidCallback onDownload;
+
+  @override
+  State<_OriginalPreviewDialog> createState() => _OriginalPreviewDialogState();
+}
+
+class _OriginalPreviewDialogState extends State<_OriginalPreviewDialog> {
+  Uint8List? _bytes;
+  String? _error;
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final data = await widget.loadBytes();
+      if (!mounted) return;
+      setState(() {
+        _bytes = data;
+        _loading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = '$e';
+        _loading = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 960, maxHeight: 860),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AppBar(
+              title: Text(widget.title),
+              automaticallyImplyLeading: false,
+              actions: [
+                IconButton(
+                  tooltip: '下载',
+                  onPressed: widget.onDownload,
+                  icon: const Icon(Icons.download_rounded),
+                ),
+                IconButton(
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.close),
+                ),
+              ],
+            ),
+            Flexible(
+              child: _loading
+                  ? const Padding(
+                      padding: EdgeInsets.all(48),
+                      child: CircularProgressIndicator(),
+                    )
+                  : _error != null
+                      ? Padding(
+                          padding: const EdgeInsets.all(24),
+                          child: Text('预览失败：$_error'),
+                        )
+                      : InteractiveViewer(
+                          minScale: 0.5,
+                          maxScale: 5,
+                          child: Image.memory(_bytes!),
+                        ),
+            ),
+          ],
         ),
       ),
     );
@@ -635,12 +971,18 @@ class _HeaderBar extends StatelessWidget {
     required this.total,
     required this.loaded,
     required this.connected,
+    required this.albums,
+    required this.albumId,
+    required this.onAlbumChanged,
   });
 
   final DeviceInfoModel device;
   final int total;
   final int loaded;
   final bool connected;
+  final List<Map<String, dynamic>> albums;
+  final String? albumId;
+  final ValueChanged<String?> onAlbumChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -659,14 +1001,39 @@ class _HeaderBar extends StatelessWidget {
               child: Text('${device.ip}:${device.port}'),
             ),
             const SizedBox(width: 12),
-            Text('已加载 $loaded / $total'),
+            Text('已加载 $loaded / $total · 最近在前'),
+            if (albums.isNotEmpty) ...[
+              const SizedBox(width: 16),
+              DropdownButtonHideUnderline(
+                child: DropdownButton<String?>(
+                  value: albumId,
+                  hint: const Text('全部分类'),
+                  items: [
+                    const DropdownMenuItem<String?>(
+                      value: null,
+                      child: Text('全部相册'),
+                    ),
+                    ...albums
+                        .where((e) => e['isAll'] != true)
+                        .map(
+                          (e) => DropdownMenuItem<String?>(
+                            value: '${e['id']}',
+                            child: Text('${e['name']} (${e['count']})'),
+                          ),
+                        ),
+                  ],
+                  onChanged: onAlbumChanged,
+                ),
+              ),
+            ],
             const Spacer(),
             Text(
               connected
-                  ? '单击选择 · 双击预览 · 拖拽/按钮上传 · 批量下载'
+                  ? '单击选择 · 双击预览原图 · 右键更多 · 拖拽上传'
                   : '连接已断开，传输可能失败',
               style: TextStyle(
-                color: connected ? const Color(0xFF5A6F6D) : Colors.red.shade700,
+                color:
+                    connected ? const Color(0xFF5A6F6D) : Colors.red.shade700,
               ),
             ),
           ],

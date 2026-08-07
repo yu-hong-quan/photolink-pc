@@ -53,6 +53,19 @@ class ThumbnailCache {
     await file.writeAsBytes(bytes, flush: true);
   }
 
+  /// 彻底删除后清理本地缩略图，避免 PC 端继续展示已销毁图片
+  Future<void> remove(String deviceId, String photoId) async {
+    final key = _key(deviceId, photoId);
+    _memory.remove(key);
+    final root = await _ensureRoot();
+    final file = _fileFor(root, key);
+    if (await file.exists()) {
+      try {
+        await file.delete();
+      } catch (_) {}
+    }
+  }
+
   /// 可选：清理过期缓存（默认 7 天）
   Future<void> purgeOlderThan({Duration maxAge = const Duration(days: 7)}) async {
     final root = await _ensureRoot();
