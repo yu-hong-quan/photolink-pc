@@ -22,7 +22,7 @@ import '../widgets/lazy_thumb_tile.dart';
 import '../widgets/task_queue_panel.dart';
 import 'trash_page.dart';
 
-/// 手机相册浏览：懒加载网格、原图预览、软删、重命名/归类、回收站入口
+/// 手机相册浏览：照片/视频分栏、懒加载网格、预览、软删、重命名/归类、回收站入口
 class GalleryPage extends StatefulWidget {
   const GalleryPage({super.key, required this.device});
 
@@ -51,6 +51,11 @@ class _GalleryPageState extends State<GalleryPage> {
   String? _error;
   bool _disconnectDialogShowing = false;
   String? _albumId;
+
+  /// 与相册分类分开：照片 / 视频独立管理
+  String _mediaType = MediaKind.image;
+
+  bool get _isVideoMode => _mediaType == MediaKind.video;
 
   String get _deviceKey =>
       widget.device.deviceId.isNotEmpty
@@ -136,23 +141,27 @@ class _GalleryPageState extends State<GalleryPage> {
     });
     try {
       await _api.fetchDeviceInfo();
-      try {
-        final albums = await _api.listAlbums();
-        if (mounted) {
-          setState(() {
-            _albums
-              ..clear()
-              ..addAll(albums);
-          });
-        }
-      } catch (_) {
-        // 旧版手机端可能无 albums API，忽略即可
-      }
+      await _reloadAlbums();
       await _loadPage(reset: true);
     } catch (e) {
       setState(() => _error = '连接失败：$e');
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _reloadAlbums() async {
+    try {
+      final albums = await _api.listAlbums(mediaType: _mediaType);
+      if (mounted) {
+        setState(() {
+          _albums
+            ..clear()
+            ..addAll(albums);
+        });
+      }
+    } catch (_) {
+      // 旧版手机端可能无 albums / mediaType，忽略即可
     }
   }
 
@@ -163,12 +172,36 @@ class _GalleryPageState extends State<GalleryPage> {
       _selected.clear();
     }
     // 元数据分页加载；缩略图由格子组件自行懒加载，避免整页 setState 卡顿
-    final result = await _api.listPhotos(page: _page, albumId: _albumId);
+    final result = await _api.listPhotos(
+      page: _page,
+      albumId: _albumId,
+      mediaType: _mediaType,
+    );
     if (!mounted) return;
     setState(() {
       _total = result.total;
       _photos.addAll(result.list);
     });
+  }
+
+  /// 切换照片 / 视频分栏时重置相册筛选并重载
+  Future<void> _onMediaTypeChanged(String mediaType) async {
+    final next = MediaKind.normalize(mediaType);
+    if (next == _mediaType) return;
+    setState(() {
+      _mediaType = next;
+      _albumId = null;
+      _loading = true;
+      _error = null;
+    });
+    try {
+      await _reloadAlbums();
+      await _loadPage(reset: true);
+    } catch (e) {
+      if (mounted) setState(() => _error = '加载失败：$e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   void _onScroll() {
@@ -229,7 +262,7 @@ class _GalleryPageState extends State<GalleryPage> {
       builder: (ctx) => AlertDialog(
         title: const Text('移入回收站'),
         content: Text(
-          '将 ${_selected.length} 张照片移入回收站（可撤回）。'
+          '将 ${_selected.length} 项${_isVideoMode ? '视频' : '照片'}移入回收站（可撤回）。'
           '彻底删除需在回收站中操作。',
         ),
         actions: [
@@ -257,7 +290,7 @@ class _GalleryPageState extends State<GalleryPage> {
 
   Future<void> _renameSelected() async {
     if (_selected.length != 1) {
-      _toast('请先只选择一张图片再重命名');
+      _toast('请先只选择一项再重命名');
       return;
     }
     final id = _selected.first;
@@ -317,7 +350,10 @@ class _GalleryPageState extends State<GalleryPage> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('将 ${_selected.length} 张图片归入手机相册分类（同步到系统相册）'),
+            Text(
+              '将 ${_selected.length} 项${_isVideoMode ? '视频' : '图片'}'
+              '归入手机相册分类（同步到系统相册）',
+            ),
             const SizedBox(height: 12),
             TextField(
               controller: controller,
@@ -366,16 +402,7 @@ class _GalleryPageState extends State<GalleryPage> {
         albumName: albumName,
       );
       _toast('已归类到「$albumName」');
-      try {
-        final albums = await _api.listAlbums();
-        if (mounted) {
-          setState(() {
-            _albums
-              ..clear()
-              ..addAll(albums);
-          });
-        }
-      } catch (_) {}
+      await _reloadAlbums();
       await _loadPage(reset: true);
     } catch (e) {
       _toast('归类失败：$e');
@@ -407,14 +434,14 @@ class _GalleryPageState extends State<GalleryPage> {
   void _enqueueDownload(PhotoMeta photo) {
     final task = TransferTask(
       id: 'dl_${photo.id}_${const Uuid().v4()}',
-      name: photo.title?.isNotEmpty == true ? photo.title! : 'photo_${photo.id}',
+      name: photo.suggestedFileName,
       type: TransferTaskType.download,
       execute: ({required onProgress, required token}) async {
         final dir = await _ensureSaveDir();
         await _api.downloadOriginal(
           photoId: photo.id,
           saveDir: dir,
-          fileName: '${photo.id}.jpg',
+          fileName: photo.suggestedFileName,
           token: token,
           onProgress: (received, total) {
             final progress =
@@ -437,17 +464,38 @@ class _GalleryPageState extends State<GalleryPage> {
     _toast('已加入 ${selectedPhotos.length} 个下载任务');
   }
 
+  static const _imageExts = [
+    '.jpg',
+    '.jpeg',
+    '.png',
+    '.gif',
+    '.webp',
+    '.heic',
+    '.bmp',
+  ];
+  static const _videoExts = [
+    '.mp4',
+    '.mov',
+    '.m4v',
+    '.avi',
+    '.mkv',
+    '.webm',
+    '.3gp',
+    '.wmv',
+  ];
+
   void _uploadFiles(List<XFile> files) {
-    final images = files.where((f) {
+    // 当前分栏只接收对应类型，避免图/视频混传造成错位
+    final allow = _isVideoMode ? _videoExts : _imageExts;
+    final matched = files.where((f) {
       final ext = p.extension(f.path).toLowerCase();
-      return ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.bmp']
-          .contains(ext);
+      return allow.contains(ext);
     }).toList();
-    if (images.isEmpty) {
-      _toast('未检测到图片文件');
+    if (matched.isEmpty) {
+      _toast(_isVideoMode ? '未检测到视频文件' : '未检测到图片文件');
       return;
     }
-    final tasks = images.map((x) {
+    final tasks = matched.map((x) {
       return TransferTask(
         id: 'up_${const Uuid().v4()}',
         name: p.basename(x.path),
@@ -499,7 +547,11 @@ class _GalleryPageState extends State<GalleryPage> {
   Future<void> _pickAndUpload() async {
     final result = await FilePicker.platform.pickFiles(
       allowMultiple: true,
-      type: FileType.image,
+      // 视频用 custom 扩展名；图片继续用系统图片选择器
+      type: _isVideoMode ? FileType.custom : FileType.image,
+      allowedExtensions: _isVideoMode
+          ? _videoExts.map((e) => e.replaceFirst('.', '')).toList()
+          : null,
     );
     if (result == null) return;
     final files = result.paths
@@ -534,7 +586,9 @@ class _GalleryPageState extends State<GalleryPage> {
         appBar: AppBar(
           title: Row(
             children: [
-              Text('${widget.device.deviceName} 相册'),
+              Text(
+                '${widget.device.deviceName} · ${_isVideoMode ? '视频' : '相册'}',
+              ),
               const SizedBox(width: 10),
               _ConnectionBadge(connected: connected),
             ],
@@ -578,7 +632,7 @@ class _GalleryPageState extends State<GalleryPage> {
               icon: const Icon(Icons.delete_sweep_rounded),
             ),
             IconButton(
-              tooltip: '选择图片上传',
+              tooltip: _isVideoMode ? '选择视频上传' : '选择图片上传',
               onPressed: _pickAndUpload,
               icon: const Icon(Icons.upload_file_rounded),
             ),
@@ -600,7 +654,9 @@ class _GalleryPageState extends State<GalleryPage> {
                   connected: connected,
                   albums: _albums,
                   albumId: _albumId,
+                  mediaType: _mediaType,
                   onAlbumChanged: _onAlbumChanged,
+                  onMediaTypeChanged: _onMediaTypeChanged,
                 ),
                 Expanded(child: _buildBody()),
                 TaskQueuePanel(queue: _queue),
@@ -667,11 +723,13 @@ class _GalleryPageState extends State<GalleryPage> {
       );
     }
     if (_photos.isEmpty) {
-      return const Center(
+      return Center(
         child: Text(
-          '手机相册暂无图片\n可拖拽本地图片到此窗口上传，或点击右上角上传',
+          _isVideoMode
+              ? '手机暂无视频\n可拖拽本地视频到此窗口上传，或点击右上角上传'
+              : '手机相册暂无图片\n可拖拽本地图片到此窗口上传，或点击右上角上传',
           textAlign: TextAlign.center,
-          style: TextStyle(height: 1.5, color: Color(0xFF5A6F6D)),
+          style: const TextStyle(height: 1.5, color: Color(0xFF5A6F6D)),
         ),
       );
     }
@@ -695,12 +753,16 @@ class _GalleryPageState extends State<GalleryPage> {
         final selected = _selected.contains(photo.id);
         return RepaintBoundary(
           child: LazyThumbTile(
-            key: ValueKey(photo.id),
+            key: ValueKey('${_mediaType}_${photo.id}'),
             cacheDeviceKey: _deviceKey,
             itemId: photo.id,
             thumbUrl: _api.thumbnailUrl(photo.id),
             http: _http,
             selected: selected,
+            isVideo: photo.isVideo,
+            durationLabel: photo.isVideo
+                ? _formatDuration(photo.durationMs)
+                : null,
             onTap: () => _toggleSelect(photo.id),
             onDoubleTap: () => _preview(photo),
             onSecondaryTap: () => _showPhotoMenu(photo),
@@ -727,7 +789,7 @@ class _GalleryPageState extends State<GalleryPage> {
                 padding: const EdgeInsets.all(4),
                 minimumSize: const Size(32, 32),
               ),
-              tooltip: '下载原图',
+              tooltip: photo.isVideo ? '下载视频' : '下载原图',
               onPressed: () => _enqueueDownload(photo),
               icon: const Icon(Icons.download_rounded, size: 18),
             ),
@@ -735,6 +797,19 @@ class _GalleryPageState extends State<GalleryPage> {
         );
       },
     );
+  }
+
+  /// 将毫秒时长格式化为 m:ss / h:mm:ss
+  String _formatDuration(int ms) {
+    if (ms <= 0) return '视频';
+    final totalSec = (ms / 1000).round();
+    final h = totalSec ~/ 3600;
+    final m = (totalSec % 3600) ~/ 60;
+    final s = totalSec % 60;
+    if (h > 0) {
+      return '$h:${m.toString().padLeft(2, '0')}:${s.toString().padLeft(2, '0')}';
+    }
+    return '$m:${s.toString().padLeft(2, '0')}';
   }
 
   Future<void> _showPhotoMenu(PhotoMeta photo) async {
@@ -745,8 +820,12 @@ class _GalleryPageState extends State<GalleryPage> {
           mainAxisSize: MainAxisSize.min,
           children: [
             ListTile(
-              leading: const Icon(Icons.zoom_in_rounded),
-              title: const Text('预览原图'),
+              leading: Icon(
+                _isVideoMode
+                    ? Icons.play_circle_outline_rounded
+                    : Icons.zoom_in_rounded,
+              ),
+              title: Text(_isVideoMode ? '预览视频' : '预览原图'),
               onTap: () => Navigator.pop(ctx, 'preview'),
             ),
             ListTile(
@@ -790,8 +869,31 @@ class _GalleryPageState extends State<GalleryPage> {
     }
   }
 
-  /// 原图预览（非缩略图），支持缩放
+  /// 图片：原图像素预览；视频：缓存到临时目录后用系统播放器打开
   Future<void> _preview(PhotoMeta photo) async {
+    if (photo.isVideo) {
+      await showDialog<void>(
+        context: context,
+        builder: (ctx) => _VideoPreviewDialog(
+          title: photo.title ?? photo.id,
+          durationLabel: _formatDuration(photo.durationMs),
+          downloadToTemp: () async {
+            final tmp = await getTemporaryDirectory();
+            final dir = Directory(p.join(tmp.path, 'photolink_preview'));
+            return _api.downloadOriginal(
+              photoId: photo.id,
+              saveDir: dir,
+              fileName: photo.suggestedFileName,
+            );
+          },
+          onDownload: () {
+            Navigator.pop(ctx);
+            _enqueueDownload(photo);
+          },
+        ),
+      );
+      return;
+    }
     await showDialog<void>(
       context: context,
       builder: (ctx) => _OriginalPreviewDialog(
@@ -950,7 +1052,9 @@ class _HeaderBar extends StatelessWidget {
     required this.connected,
     required this.albums,
     required this.albumId,
+    required this.mediaType,
     required this.onAlbumChanged,
+    required this.onMediaTypeChanged,
   });
 
   final DeviceInfoModel device;
@@ -959,10 +1063,13 @@ class _HeaderBar extends StatelessWidget {
   final bool connected;
   final List<Map<String, dynamic>> albums;
   final String? albumId;
+  final String mediaType;
   final ValueChanged<String?> onAlbumChanged;
+  final ValueChanged<String> onMediaTypeChanged;
 
   @override
   Widget build(BuildContext context) {
+    final isVideo = mediaType == MediaKind.video;
     return Material(
       color: const Color(0xFFE8F4F2),
       child: Padding(
@@ -978,7 +1085,38 @@ class _HeaderBar extends StatelessWidget {
               child: Text('${device.ip}:${device.port}'),
             ),
             const SizedBox(width: 12),
-            Text('已加载 $loaded / $total · 最近在前'),
+            // 照片 / 视频分栏，与系统相册筛选相互独立
+            SegmentedButton<String>(
+              segments: const [
+                ButtonSegment<String>(
+                  value: MediaKind.image,
+                  label: Text('照片'),
+                  icon: Icon(Icons.photo_rounded, size: 18),
+                ),
+                ButtonSegment<String>(
+                  value: MediaKind.video,
+                  label: Text('视频'),
+                  icon: Icon(Icons.videocam_rounded, size: 18),
+                ),
+              ],
+              selected: {mediaType},
+              onSelectionChanged: (set) {
+                if (set.isNotEmpty) onMediaTypeChanged(set.first);
+              },
+              style: ButtonStyle(
+                visualDensity: VisualDensity.compact,
+                backgroundColor: WidgetStateProperty.resolveWith((states) {
+                  if (states.contains(WidgetState.selected)) {
+                    return PhotoLinkTheme.brand.withValues(alpha: 0.15);
+                  }
+                  return Colors.white;
+                }),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Text(
+              '已加载 $loaded / $total · ${isVideo ? '视频' : '照片'} · 最近在前',
+            ),
             if (albums.isNotEmpty) ...[
               const SizedBox(width: 16),
               AlbumPickerButton(
@@ -1004,7 +1142,9 @@ class _HeaderBar extends StatelessWidget {
                 const SizedBox(width: 6),
                 Text(
                   connected
-                      ? '设备连接正常 · 单击选择 · 双击预览 · 拖拽上传'
+                      ? (isVideo
+                          ? '设备连接正常 · 单击选择 · 双击预览视频 · 拖拽上传'
+                          : '设备连接正常 · 单击选择 · 双击预览 · 拖拽上传')
                       : '连接已断开，传输可能失败',
                   style: TextStyle(
                     color: connected
@@ -1015,6 +1155,145 @@ class _HeaderBar extends StatelessWidget {
                   ),
                 ),
               ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// 视频预览：先下载到临时目录，再用系统默认播放器打开（避免自签 HTTPS 直链播放）
+class _VideoPreviewDialog extends StatefulWidget {
+  const _VideoPreviewDialog({
+    required this.title,
+    required this.durationLabel,
+    required this.downloadToTemp,
+    required this.onDownload,
+  });
+
+  final String title;
+  final String durationLabel;
+  final Future<File> Function() downloadToTemp;
+  final VoidCallback onDownload;
+
+  @override
+  State<_VideoPreviewDialog> createState() => _VideoPreviewDialogState();
+}
+
+class _VideoPreviewDialogState extends State<_VideoPreviewDialog> {
+  bool _loading = false;
+  String? _error;
+  String? _localPath;
+
+  Future<void> _play() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final file = await widget.downloadToTemp();
+      if (!mounted) return;
+      setState(() {
+        _localPath = file.path;
+        _loading = false;
+      });
+      await _openWithSystemPlayer(file.path);
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = '$e';
+        _loading = false;
+      });
+    }
+  }
+
+  /// Windows / macOS / Linux 用系统默认应用打开本地文件
+  Future<void> _openWithSystemPlayer(String path) async {
+    if (Platform.isWindows) {
+      await Process.start('cmd', ['/c', 'start', '', path]);
+      return;
+    }
+    if (Platform.isMacOS) {
+      await Process.start('open', [path]);
+      return;
+    }
+    await Process.start('xdg-open', [path]);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520, maxHeight: 360),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AppBar(
+              title: Text(widget.title),
+              automaticallyImplyLeading: false,
+              actions: [
+                IconButton(
+                  tooltip: '下载到电脑',
+                  onPressed: widget.onDownload,
+                  icon: const Icon(Icons.download_rounded),
+                ),
+                IconButton(
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.close),
+                ),
+              ],
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
+              child: Column(
+                children: [
+                  const Icon(
+                    Icons.videocam_rounded,
+                    size: 56,
+                    color: PhotoLinkTheme.brand,
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    '时长 ${widget.durationLabel}',
+                    style: const TextStyle(
+                      color: Color(0xFF5A6F6D),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    _localPath == null
+                        ? '将缓存到临时目录后用系统播放器打开'
+                        : '已缓存：$_localPath',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: Color(0xFF5A6F6D),
+                    ),
+                  ),
+                  if (_error != null) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      '打开失败：$_error',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.red.shade700),
+                    ),
+                  ],
+                  const SizedBox(height: 18),
+                  FilledButton.icon(
+                    onPressed: _loading ? null : _play,
+                    icon: _loading
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.play_arrow_rounded),
+                    label: Text(_loading ? '准备中…' : '用系统播放器打开'),
+                  ),
+                ],
+              ),
             ),
           ],
         ),

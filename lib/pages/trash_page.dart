@@ -2,12 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:http/io_client.dart';
 
 import '../core/models/device_info.dart';
+import '../core/models/photo_meta.dart';
 import '../services/api_client.dart';
 import '../services/gallery_api_service.dart';
 import '../services/thumbnail_cache.dart';
 import '../widgets/lazy_thumb_tile.dart';
 
-/// 回收站：查看软删图片、恢复、彻底删除（彻底删除后 PC 也不留存缩略图）
+/// 回收站：查看软删图片/视频、恢复、彻底删除（彻底删除后 PC 也不留存缩略图）
 class TrashPage extends StatefulWidget {
   const TrashPage({
     super.key,
@@ -99,7 +100,7 @@ class _TrashPageState extends State<TrashPage> {
     if (_selected.isEmpty) return;
     try {
       await _api.restoreTrash(_selected.toList());
-      _toast('已恢复 ${_selected.length} 张到相册');
+      _toast('已恢复 ${_selected.length} 项到手机');
       await _reload();
     } catch (e) {
       _toast('恢复失败：$e');
@@ -113,7 +114,7 @@ class _TrashPageState extends State<TrashPage> {
       builder: (ctx) => AlertDialog(
         title: const Text('彻底删除'),
         content: Text(
-          '将永久删除 ${_selected.length} 张图片，手机与电脑均不再保留，无法撤回。',
+          '将永久删除 ${_selected.length} 项媒体，手机与电脑均不再保留，无法撤回。',
         ),
         actions: [
           TextButton(
@@ -231,6 +232,12 @@ class _TrashPageState extends State<TrashPage> {
         final trashId = '${item['id']}';
         final title = '${item['title'] ?? trashId}';
         final selected = _selected.contains(trashId);
+        final isVideo = MediaKind.looksLikeVideo(
+          mimeType: item['mimeType']?.toString(),
+          pathOrName: '${item['fileName'] ?? title}',
+        ) ||
+            MediaKind.normalize(item['mediaType']?.toString()) ==
+                MediaKind.video;
         return RepaintBoundary(
           child: LazyThumbTile(
             key: ValueKey(trashId),
@@ -240,6 +247,7 @@ class _TrashPageState extends State<TrashPage> {
             http: _http,
             selected: selected,
             title: title,
+            isVideo: isVideo,
             onTap: () {
               setState(() {
                 if (selected) {

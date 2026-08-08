@@ -34,10 +34,13 @@ class GalleryApiService {
     int page = 0,
     int pageSize = PhotoLinkConst.defaultPageSize,
     String? albumId,
+    String mediaType = MediaKind.image,
   }) async {
     final query = <String, String>{
       'page': '$page',
       'pageSize': '$pageSize',
+      // 与手机端约定：image | video（分栏管理）
+      'mediaType': MediaKind.normalize(mediaType),
     };
     if (albumId != null && albumId.isNotEmpty) {
       query['albumId'] = albumId;
@@ -59,8 +62,13 @@ class GalleryApiService {
     );
   }
 
-  Future<List<Map<String, dynamic>>> listAlbums() async {
-    final res = await _client.get('/api/gallery/albums');
+  Future<List<Map<String, dynamic>>> listAlbums({
+    String mediaType = MediaKind.image,
+  }) async {
+    final res = await _client.get(
+      '/api/gallery/albums',
+      query: {'mediaType': MediaKind.normalize(mediaType)},
+    );
     if (res.statusCode != 200) {
       throw Exception('拉取相册分类失败 HTTP ${res.statusCode}');
     }
@@ -76,7 +84,7 @@ class GalleryApiService {
   String originalUrl(String photoId) =>
       '${device.baseUrl}/api/gallery/original/${Uri.encodeComponent(photoId)}';
 
-  /// 预览用：拉取原图字节（带简单超时；大图由调用方注意内存）
+  /// 预览用：拉取原图字节（带简单超时；大图由调用方注意内存；视频勿用）
   Future<Uint8List> fetchOriginalBytes(String photoId) async {
     final streamed = await _client.getStream(
       '/api/gallery/original/${Uri.encodeComponent(photoId)}',
@@ -91,7 +99,7 @@ class GalleryApiService {
     return builder.takeBytes();
   }
 
-  /// 流式下载原图；[token] 可中途取消
+  /// 流式下载原文件；[token] 可中途取消
   Future<File> downloadOriginal({
     required String photoId,
     required Directory saveDir,
@@ -107,10 +115,14 @@ class GalleryApiService {
       '/api/gallery/original/${Uri.encodeComponent(photoId)}',
     );
     if (streamed.statusCode != 200) {
-      throw Exception('下载原图失败 HTTP ${streamed.statusCode}');
+      throw Exception('下载失败 HTTP ${streamed.statusCode}');
     }
     final total = streamed.contentLength;
-    final name = fileName ?? 'photo_$photoId.jpg';
+    // 优先用 Content-Disposition 文件名，否则用调用方传入名
+    final fromHeader = _fileNameFromContentDisposition(
+      streamed.headers['content-disposition'],
+    );
+    final name = fileName ?? fromHeader ?? 'media_$photoId.bin';
     final file = File(p.join(saveDir.path, name));
     final sink = file.openWrite();
     var received = 0;
@@ -128,6 +140,21 @@ class GalleryApiService {
       await sink.close();
       if (await file.exists()) await file.delete();
       rethrow;
+    }
+  }
+
+  String? _fileNameFromContentDisposition(String? header) {
+    if (header == null || header.isEmpty) return null;
+    // 解析 attachment; filename="xxx.mp4"
+    final match = RegExp(
+      r'filename="?([^";]+)"?',
+      caseSensitive: false,
+    ).firstMatch(header);
+    if (match == null) return null;
+    try {
+      return p.basename(Uri.decodeComponent(match.group(1)!.trim()));
+    } catch (_) {
+      return p.basename(match.group(1)!.trim());
     }
   }
 

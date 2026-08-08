@@ -21,6 +21,8 @@ class LazyThumbTile extends StatefulWidget {
     this.badge,
     this.bottomLeft,
     this.title,
+    this.isVideo = false,
+    this.durationLabel,
   });
 
   final String cacheDeviceKey;
@@ -34,6 +36,10 @@ class LazyThumbTile extends StatefulWidget {
   final Widget? badge;
   final Widget? bottomLeft;
   final String? title;
+
+  /// 视频格子显示播放角标与时长
+  final bool isVideo;
+  final String? durationLabel;
 
   @override
   State<LazyThumbTile> createState() => _LazyThumbTileState();
@@ -120,6 +126,16 @@ class _LazyThumbTileState extends State<LazyThumbTile> {
               ),
             if (widget.badge != null)
               Positioned(left: 6, top: 6, child: widget.badge!),
+            // 视频封面中央播放提示
+            if (widget.isVideo)
+              const Center(
+                child: Icon(
+                  Icons.play_circle_fill_rounded,
+                  color: Colors.white70,
+                  size: 36,
+                  shadows: [Shadow(blurRadius: 6, color: Colors.black54)],
+                ),
+              ),
             Positioned(
               top: 6,
               right: 6,
@@ -131,6 +147,29 @@ class _LazyThumbTileState extends State<LazyThumbTile> {
                 shadows: const [Shadow(blurRadius: 4, color: Colors.black45)],
               ),
             ),
+            if (widget.isVideo &&
+                widget.durationLabel != null &&
+                widget.durationLabel!.isNotEmpty)
+              Positioned(
+                right: 6,
+                bottom: 6,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    widget.durationLabel!,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ),
             if (widget.bottomLeft != null)
               Positioned(left: 4, bottom: 4, child: widget.bottomLeft!),
             if (widget.title != null && widget.title!.isNotEmpty)
@@ -317,8 +356,8 @@ class AlbumPickerButton extends StatelessWidget {
                           ),
                         ),
                         subtitle: o.count == null
-                            ? const Text('显示手机全部图片')
-                            : Text('${o.count} 张'),
+                            ? const Text('显示当前类型下的全部媒体')
+                            : Text('${o.count} 项'),
                         trailing: selected
                             ? const Icon(
                                 Icons.check_circle_rounded,
