@@ -38,7 +38,8 @@ class _GalleryPageState extends State<GalleryPage> {
   late final ConnectionWatchdog _watchdog;
 
   final _photos = <PhotoMeta>[];
-  final _selected = <String>{};
+  /// 选中集合用 ValueNotifier，格子局部刷新，避免单击整页重建卡顿
+  final _selection = ValueNotifier<Set<String>>(<String>{});
   final _scroll = ScrollController();
   final _albums = <Map<String, dynamic>>[];
   late final IOClient _http;
@@ -81,6 +82,7 @@ class _GalleryPageState extends State<GalleryPage> {
     _watchdog.dispose();
     _queue.dispose();
     _scroll.dispose();
+    _selection.dispose();
     _http.close();
     _api.close();
     super.dispose();
@@ -169,7 +171,7 @@ class _GalleryPageState extends State<GalleryPage> {
     if (reset) {
       _page = 0;
       _photos.clear();
-      _selected.clear();
+      _selection.value = <String>{};
     }
     // 元数据分页加载；缩略图由格子组件自行懒加载，避免整页 setState 卡顿
     final result = await _api.listPhotos(
@@ -225,44 +227,59 @@ class _GalleryPageState extends State<GalleryPage> {
   }
 
   void _toggleSelect(String id) {
-    setState(() {
-      if (_selected.contains(id)) {
-        _selected.remove(id);
-      } else {
-        _selected.add(id);
-      }
-    });
+    final next = Set<String>.from(_selection.value);
+    if (!next.add(id)) next.remove(id);
+    _selection.value = next;
   }
 
   /// 全选 / 取消全选（针对当前已加载列表）
   void _toggleSelectAll() {
-    setState(() {
-      final allIds = _photos.map((e) => e.id).toSet();
-      final allSelected =
-          allIds.isNotEmpty && allIds.every(_selected.contains);
-      if (allSelected) {
-        _selected.clear();
-      } else {
-        _selected
-          ..clear()
-          ..addAll(allIds);
-      }
-    });
+    final allIds = _photos.map((e) => e.id).toSet();
+    final allSelected =
+        allIds.isNotEmpty && allIds.every(_selection.value.contains);
+    _selection.value = allSelected ? <String>{} : allIds;
   }
 
-  bool get _allLoadedSelected {
+  bool _allLoadedSelectedOf(Set<String> selected) {
     if (_photos.isEmpty) return false;
-    return _photos.every((e) => _selected.contains(e.id));
+    return _photos.every((e) => selected.contains(e.id));
+  }
+
+  /// 主动断开：退出相册页并通知设备列表清除会话
+  Future<void> _disconnectManually() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('断开连接'),
+        content: const Text(
+          '将断开与手机的当前会话并返回设备列表。\n'
+          '请确认手机端保持亮屏且 App 在前台，以便稍后重新连接。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('断开'),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && mounted) {
+      Navigator.of(context).pop('disconnect');
+    }
   }
 
   Future<void> _deleteSelected() async {
-    if (_selected.isEmpty) return;
+    if (_selection.value.isEmpty) return;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('移入回收站'),
         content: Text(
-          '将 ${_selected.length} 项${_isVideoMode ? '视频' : '照片'}移入回收站（可撤回）。'
+          '将 ${_selection.value.length} 项${_isVideoMode ? '视频' : '照片'}移入回收站（可撤回）。'
           '彻底删除需在回收站中操作。',
         ),
         actions: [
@@ -280,7 +297,7 @@ class _GalleryPageState extends State<GalleryPage> {
     if (ok != true) return;
     try {
       _toast('等待手机确认删除…');
-      await _api.deletePhotos(_selected.toList());
+      await _api.deletePhotos(_selection.value.toList());
       _toast('手机已确认，已移入回收站');
       await _loadPage(reset: true);
     } catch (e) {
@@ -289,11 +306,11 @@ class _GalleryPageState extends State<GalleryPage> {
   }
 
   Future<void> _renameSelected() async {
-    if (_selected.length != 1) {
+    if (_selection.value.length != 1) {
       _toast('请先只选择一项再重命名');
       return;
     }
-    final id = _selected.first;
+    final id = _selection.value.first;
     final current = _photos.firstWhere(
       (e) => e.id == id,
       orElse: () => PhotoMeta(
@@ -340,7 +357,7 @@ class _GalleryPageState extends State<GalleryPage> {
   }
 
   Future<void> _categorizeSelected() async {
-    if (_selected.isEmpty) return;
+    if (_selection.value.isEmpty) return;
     final controller = TextEditingController();
     final albumName = await showDialog<String>(
       context: context,
@@ -351,7 +368,7 @@ class _GalleryPageState extends State<GalleryPage> {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Text(
-              '将 ${_selected.length} 项${_isVideoMode ? '视频' : '图片'}'
+              '将 ${_selection.value.length} 项${_isVideoMode ? '视频' : '图片'}'
               '归入手机相册分类（同步到系统相册）',
             ),
             const SizedBox(height: 12),
@@ -398,7 +415,7 @@ class _GalleryPageState extends State<GalleryPage> {
     if (albumName == null || albumName.isEmpty) return;
     try {
       await _api.categorizePhotos(
-        photoIds: _selected.toList(),
+        photoIds: _selection.value.toList(),
         albumName: albumName,
       );
       _toast('已归类到「$albumName」');
@@ -455,9 +472,9 @@ class _GalleryPageState extends State<GalleryPage> {
   }
 
   void _downloadSelected() {
-    if (_selected.isEmpty) return;
+    if (_selection.value.isEmpty) return;
     final selectedPhotos =
-        _photos.where((e) => _selected.contains(e.id)).toList();
+        _photos.where((e) => _selection.value.contains(e.id)).toList();
     for (final photo in selectedPhotos) {
       _enqueueDownload(photo);
     }
@@ -594,38 +611,51 @@ class _GalleryPageState extends State<GalleryPage> {
             ],
           ),
           actions: [
-            if (_photos.isNotEmpty)
-              TextButton.icon(
-                onPressed: _toggleSelectAll,
-                icon: Icon(
-                  _allLoadedSelected
-                      ? Icons.deselect_rounded
-                      : Icons.select_all_rounded,
-                ),
-                label: Text(_allLoadedSelected ? '取消全选' : '全选'),
-              ),
-            if (_selected.isNotEmpty) ...[
-              TextButton.icon(
-                onPressed: _downloadSelected,
-                icon: const Icon(Icons.download_rounded),
-                label: Text('下载(${_selected.length})'),
-              ),
-              TextButton.icon(
-                onPressed: _renameSelected,
-                icon: const Icon(Icons.drive_file_rename_outline_rounded),
-                label: const Text('重命名'),
-              ),
-              TextButton.icon(
-                onPressed: _categorizeSelected,
-                icon: const Icon(Icons.folder_special_rounded),
-                label: Text('归类(${_selected.length})'),
-              ),
-              TextButton.icon(
-                onPressed: _deleteSelected,
-                icon: const Icon(Icons.delete_outline_rounded),
-                label: Text('移入回收站(${_selected.length})'),
-              ),
-            ],
+            ValueListenableBuilder<Set<String>>(
+              valueListenable: _selection,
+              builder: (context, selected, _) {
+                final allSelected = _allLoadedSelectedOf(selected);
+                return Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_photos.isNotEmpty)
+                      TextButton.icon(
+                        onPressed: _toggleSelectAll,
+                        icon: Icon(
+                          allSelected
+                              ? Icons.deselect_rounded
+                              : Icons.select_all_rounded,
+                        ),
+                        label: Text(allSelected ? '取消全选' : '全选'),
+                      ),
+                    if (selected.isNotEmpty) ...[
+                      TextButton.icon(
+                        onPressed: _downloadSelected,
+                        icon: const Icon(Icons.download_rounded),
+                        label: Text('下载(${selected.length})'),
+                      ),
+                      TextButton.icon(
+                        onPressed: _renameSelected,
+                        icon: const Icon(
+                          Icons.drive_file_rename_outline_rounded,
+                        ),
+                        label: const Text('重命名'),
+                      ),
+                      TextButton.icon(
+                        onPressed: _categorizeSelected,
+                        icon: const Icon(Icons.folder_special_rounded),
+                        label: Text('归类(${selected.length})'),
+                      ),
+                      TextButton.icon(
+                        onPressed: _deleteSelected,
+                        icon: const Icon(Icons.delete_outline_rounded),
+                        label: Text('移入回收站(${selected.length})'),
+                      ),
+                    ],
+                  ],
+                );
+              },
+            ),
             IconButton(
               tooltip: '打开回收站',
               onPressed: _openTrash,
@@ -640,6 +670,11 @@ class _GalleryPageState extends State<GalleryPage> {
               tooltip: '刷新',
               onPressed: () => _loadPage(reset: true),
               icon: const Icon(Icons.refresh_rounded),
+            ),
+            IconButton(
+              tooltip: '断开连接',
+              onPressed: _disconnectManually,
+              icon: const Icon(Icons.link_off_rounded),
             ),
           ],
         ),
@@ -750,7 +785,6 @@ class _GalleryPageState extends State<GalleryPage> {
           return const Center(child: CircularProgressIndicator());
         }
         final photo = _photos[index];
-        final selected = _selected.contains(photo.id);
         return RepaintBoundary(
           child: LazyThumbTile(
             key: ValueKey('${_mediaType}_${photo.id}'),
@@ -758,13 +792,12 @@ class _GalleryPageState extends State<GalleryPage> {
             itemId: photo.id,
             thumbUrl: _api.thumbnailUrl(photo.id),
             http: _http,
-            selected: selected,
+            selection: _selection,
             isVideo: photo.isVideo,
             durationLabel: photo.isVideo
                 ? _formatDuration(photo.durationMs)
                 : null,
             onTap: () => _toggleSelect(photo.id),
-            onDoubleTap: () => _preview(photo),
             onSecondaryTap: () => _showPhotoMenu(photo),
             badge: (photo.albumName != null && photo.albumName!.isNotEmpty)
                 ? Container(
@@ -848,11 +881,8 @@ class _GalleryPageState extends State<GalleryPage> {
       ),
     );
     if (action == null) return;
-    setState(() {
-      _selected
-        ..clear()
-        ..add(photo.id);
-    });
+    // 赋新 Set 才能触发 ValueNotifier，原地 clear/add 不会通知格子
+    _selection.value = {photo.id};
     switch (action) {
       case 'preview':
         await _preview(photo);
@@ -1142,9 +1172,7 @@ class _HeaderBar extends StatelessWidget {
                 const SizedBox(width: 6),
                 Text(
                   connected
-                      ? (isVideo
-                          ? '设备连接正常 · 单击选择 · 双击预览视频 · 拖拽上传'
-                          : '设备连接正常 · 单击选择 · 双击预览 · 拖拽上传')
+                      ? '请保持手机亮屏 · 单击选择 · 右键预览 · 拖拽上传'
                       : '连接已断开，传输可能失败',
                   style: TextStyle(
                     color: connected

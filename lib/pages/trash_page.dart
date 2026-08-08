@@ -27,7 +27,8 @@ class _TrashPageState extends State<TrashPage> {
   late final GalleryApiService _api;
   late final IOClient _http;
   final _items = <Map<String, dynamic>>[];
-  final _selected = <String>{};
+  /// 与相册页一致：选中态局部通知，避免单击整页重建
+  final _selection = ValueNotifier<Set<String>>(<String>{});
   bool _loading = true;
   String? _error;
 
@@ -44,6 +45,7 @@ class _TrashPageState extends State<TrashPage> {
 
   @override
   void dispose() {
+    _selection.dispose();
     _http.close();
     _api.close();
     super.dispose();
@@ -53,8 +55,8 @@ class _TrashPageState extends State<TrashPage> {
     setState(() {
       _loading = true;
       _error = null;
-      _selected.clear();
     });
+    _selection.value = <String>{};
     try {
       final list = await _api.listTrash();
       if (!mounted) return;
@@ -77,30 +79,29 @@ class _TrashPageState extends State<TrashPage> {
 
   /// 全选 / 取消全选回收站全部条目
   void _toggleSelectAll() {
-    setState(() {
-      final allIds = _items.map((e) => '${e['id']}').toSet();
-      final allSelected =
-          allIds.isNotEmpty && allIds.every(_selected.contains);
-      if (allSelected) {
-        _selected.clear();
-      } else {
-        _selected
-          ..clear()
-          ..addAll(allIds);
-      }
-    });
+    final allIds = _items.map((e) => '${e['id']}').toSet();
+    final allSelected =
+        allIds.isNotEmpty && allIds.every(_selection.value.contains);
+    _selection.value = allSelected ? <String>{} : allIds;
   }
 
-  bool get _allSelected {
+  bool _allSelectedOf(Set<String> selected) {
     if (_items.isEmpty) return false;
-    return _items.every((e) => _selected.contains('${e['id']}'));
+    return _items.every((e) => selected.contains('${e['id']}'));
+  }
+
+  void _toggleSelect(String trashId) {
+    final next = Set<String>.from(_selection.value);
+    if (!next.add(trashId)) next.remove(trashId);
+    _selection.value = next;
   }
 
   Future<void> _restore() async {
-    if (_selected.isEmpty) return;
+    if (_selection.value.isEmpty) return;
     try {
-      await _api.restoreTrash(_selected.toList());
-      _toast('已恢复 ${_selected.length} 项到手机');
+      final n = _selection.value.length;
+      await _api.restoreTrash(_selection.value.toList());
+      _toast('已恢复 $n 项到手机');
       await _reload();
     } catch (e) {
       _toast('恢复失败：$e');
@@ -108,13 +109,13 @@ class _TrashPageState extends State<TrashPage> {
   }
 
   Future<void> _purge() async {
-    if (_selected.isEmpty) return;
+    if (_selection.value.isEmpty) return;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('彻底删除'),
         content: Text(
-          '将永久删除 ${_selected.length} 项媒体，手机与电脑均不再保留，无法撤回。',
+          '将永久删除 ${_selection.value.length} 项媒体，手机与电脑均不再保留，无法撤回。',
         ),
         actions: [
           TextButton(
@@ -131,7 +132,7 @@ class _TrashPageState extends State<TrashPage> {
     );
     if (ok != true) return;
     try {
-      final ids = _selected.toList();
+      final ids = _selection.value.toList();
       // 彻底删除前记下原图 id，清掉 PC 本地缩略图（不留存）
       final photoIds = _items
           .where((e) => ids.contains('${e['id']}'))
@@ -159,28 +160,39 @@ class _TrashPageState extends State<TrashPage> {
       appBar: AppBar(
         title: const Text('回收站'),
         actions: [
-          if (_items.isNotEmpty)
-            TextButton.icon(
-              onPressed: _toggleSelectAll,
-              icon: Icon(
-                _allSelected
-                    ? Icons.deselect_rounded
-                    : Icons.select_all_rounded,
-              ),
-              label: Text(_allSelected ? '取消全选' : '全选'),
-            ),
-          if (_selected.isNotEmpty) ...[
-            TextButton.icon(
-              onPressed: _restore,
-              icon: const Icon(Icons.restore_rounded),
-              label: Text('撤回(${_selected.length})'),
-            ),
-            TextButton.icon(
-              onPressed: _purge,
-              icon: const Icon(Icons.delete_forever_rounded),
-              label: Text('彻底删除(${_selected.length})'),
-            ),
-          ],
+          ValueListenableBuilder<Set<String>>(
+            valueListenable: _selection,
+            builder: (context, selected, _) {
+              final allSelected = _allSelectedOf(selected);
+              return Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (_items.isNotEmpty)
+                    TextButton.icon(
+                      onPressed: _toggleSelectAll,
+                      icon: Icon(
+                        allSelected
+                            ? Icons.deselect_rounded
+                            : Icons.select_all_rounded,
+                      ),
+                      label: Text(allSelected ? '取消全选' : '全选'),
+                    ),
+                  if (selected.isNotEmpty) ...[
+                    TextButton.icon(
+                      onPressed: _restore,
+                      icon: const Icon(Icons.restore_rounded),
+                      label: Text('撤回(${selected.length})'),
+                    ),
+                    TextButton.icon(
+                      onPressed: _purge,
+                      icon: const Icon(Icons.delete_forever_rounded),
+                      label: Text('彻底删除(${selected.length})'),
+                    ),
+                  ],
+                ],
+              );
+            },
+          ),
           IconButton(
             tooltip: '刷新',
             onPressed: _reload,
@@ -231,7 +243,6 @@ class _TrashPageState extends State<TrashPage> {
         final item = _items[index];
         final trashId = '${item['id']}';
         final title = '${item['title'] ?? trashId}';
-        final selected = _selected.contains(trashId);
         final isVideo = MediaKind.looksLikeVideo(
           mimeType: item['mimeType']?.toString(),
           pathOrName: '${item['fileName'] ?? title}',
@@ -245,18 +256,10 @@ class _TrashPageState extends State<TrashPage> {
             itemId: trashId,
             thumbUrl: _api.trashThumbUrl(trashId),
             http: _http,
-            selected: selected,
+            selection: _selection,
             title: title,
             isVideo: isVideo,
-            onTap: () {
-              setState(() {
-                if (selected) {
-                  _selected.remove(trashId);
-                } else {
-                  _selected.add(trashId);
-                }
-              });
-            },
+            onTap: () => _toggleSelect(trashId),
           ),
         );
       },

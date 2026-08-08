@@ -6,7 +6,7 @@ import 'package:http/io_client.dart';
 import '../theme/app_theme.dart';
 import '../services/thumbnail_cache.dart';
 
-/// 可见时才加载缩略图的格子，本地 setState，避免整页重建卡顿
+/// 可见时才加载缩略图的格子；选中态由 [selection] 局部通知，避免整页重建
 class LazyThumbTile extends StatefulWidget {
   const LazyThumbTile({
     super.key,
@@ -14,9 +14,8 @@ class LazyThumbTile extends StatefulWidget {
     required this.itemId,
     required this.thumbUrl,
     required this.http,
-    required this.selected,
+    required this.selection,
     required this.onTap,
-    this.onDoubleTap,
     this.onSecondaryTap,
     this.badge,
     this.bottomLeft,
@@ -29,9 +28,10 @@ class LazyThumbTile extends StatefulWidget {
   final String itemId;
   final String thumbUrl;
   final IOClient http;
-  final bool selected;
+
+  /// 选中集合；本格子只在自身选中态变化时 setState
+  final ValueNotifier<Set<String>> selection;
   final VoidCallback onTap;
-  final VoidCallback? onDoubleTap;
   final VoidCallback? onSecondaryTap;
   final Widget? badge;
   final Widget? bottomLeft;
@@ -47,22 +47,49 @@ class LazyThumbTile extends StatefulWidget {
 
 class _LazyThumbTileState extends State<LazyThumbTile> {
   Uint8List? _bytes;
+  MemoryImage? _memoryImage;
   bool _loading = false;
+  late bool _selected;
 
   @override
   void initState() {
     super.initState();
+    _selected = widget.selection.value.contains(widget.itemId);
+    widget.selection.addListener(_onSelectionChanged);
     _load();
   }
 
   @override
   void didUpdateWidget(covariant LazyThumbTile oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.selection != widget.selection) {
+      oldWidget.selection.removeListener(_onSelectionChanged);
+      widget.selection.addListener(_onSelectionChanged);
+      _syncSelected();
+    } else if (oldWidget.itemId != widget.itemId) {
+      _syncSelected();
+    }
     if (oldWidget.itemId != widget.itemId ||
         oldWidget.thumbUrl != widget.thumbUrl) {
       _bytes = null;
+      _memoryImage = null;
       _load();
     }
+  }
+
+  @override
+  void dispose() {
+    widget.selection.removeListener(_onSelectionChanged);
+    super.dispose();
+  }
+
+  /// 仅当本 item 的勾选态翻转时才重建，避免网格全体刷新
+  void _onSelectionChanged() => _syncSelected();
+
+  void _syncSelected() {
+    final next = widget.selection.value.contains(widget.itemId);
+    if (next == _selected || !mounted) return;
+    setState(() => _selected = next);
   }
 
   Future<void> _load() async {
@@ -72,7 +99,12 @@ class _LazyThumbTileState extends State<LazyThumbTile> {
       final cached = await ThumbnailCache.instance
           .get(widget.cacheDeviceKey, widget.itemId);
       if (cached != null) {
-        if (mounted) setState(() => _bytes = cached);
+        if (mounted) {
+          setState(() {
+            _bytes = cached;
+            _memoryImage = MemoryImage(cached);
+          });
+        }
         return;
       }
       final res = await widget.http.get(Uri.parse(widget.thumbUrl));
@@ -80,7 +112,12 @@ class _LazyThumbTileState extends State<LazyThumbTile> {
         final bytes = res.bodyBytes;
         await ThumbnailCache.instance
             .put(widget.cacheDeviceKey, widget.itemId, bytes);
-        if (mounted) setState(() => _bytes = bytes);
+        if (mounted) {
+          setState(() {
+            _bytes = bytes;
+            _memoryImage = MemoryImage(bytes);
+          });
+        }
       }
     } catch (_) {
     } finally {
@@ -90,18 +127,18 @@ class _LazyThumbTileState extends State<LazyThumbTile> {
 
   @override
   Widget build(BuildContext context) {
+    // 不绑 onDoubleTap：与 onTap 同控件会触发约 300ms 双击判定延迟
     return Material(
       color: Colors.black12,
       borderRadius: BorderRadius.circular(14),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: widget.onTap,
-        onDoubleTap: widget.onDoubleTap,
         onSecondaryTap: widget.onSecondaryTap,
         child: Stack(
           fit: StackFit.expand,
           children: [
-            if (_bytes == null)
+            if (_memoryImage == null)
               const Center(
                 child: SizedBox(
                   width: 20,
@@ -110,13 +147,13 @@ class _LazyThumbTileState extends State<LazyThumbTile> {
                 ),
               )
             else
-              Image.memory(
-                _bytes!,
+              Image(
+                image: _memoryImage!,
                 fit: BoxFit.cover,
                 gaplessPlayback: true,
                 filterQuality: FilterQuality.low,
               ),
-            if (widget.selected)
+            if (_selected)
               Container(
                 decoration: BoxDecoration(
                   border: Border.all(color: PhotoLinkTheme.brand, width: 3),
@@ -140,10 +177,10 @@ class _LazyThumbTileState extends State<LazyThumbTile> {
               top: 6,
               right: 6,
               child: Icon(
-                widget.selected
+                _selected
                     ? Icons.check_circle_rounded
                     : Icons.circle_outlined,
-                color: widget.selected ? PhotoLinkTheme.brand : Colors.white,
+                color: _selected ? PhotoLinkTheme.brand : Colors.white,
                 shadows: const [Shadow(blurRadius: 4, color: Colors.black45)],
               ),
             ),

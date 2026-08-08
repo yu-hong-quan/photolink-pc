@@ -310,7 +310,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
       });
 
       _galleryOpen = true;
-      await Navigator.of(context).push(
+      final result = await Navigator.of(context).push<Object?>(
         PageRouteBuilder(
           pageBuilder: (context, animation, secondaryAnimation) =>
               GalleryPage(device: merged),
@@ -331,9 +331,19 @@ class _DeviceListPageState extends State<DeviceListPage> {
           },
         ),
       );
-      // 从相册返回：保留设备信息，状态改为「最近会话」
+      // 从相册返回：主动断开则清会话；普通返回保留「最近连接」
       if (mounted) {
-        setState(() => _sessionActive = false);
+        setState(() {
+          _sessionActive = false;
+          if (result == 'disconnect') {
+            _sessionDevice = null;
+          }
+        });
+        if (result == 'disconnect') {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('已断开与手机的连接')),
+          );
+        }
       }
     } catch (e) {
       if (mounted) {
@@ -868,6 +878,17 @@ class _ConnectionStatusBanner extends StatelessWidget {
                     ),
                     overflow: TextOverflow.ellipsis,
                   ),
+                  if (active && !connecting) ...[
+                    const SizedBox(height: 4),
+                    const Text(
+                      '请保持手机亮屏且 App 在前台，息屏可能导致断开',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Color(0xFF8A6A2F),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -876,11 +897,17 @@ class _ConnectionStatusBanner extends StatelessWidget {
                 onPressed: onOpenGallery,
                 child: const Text('打开相册'),
               ),
-            IconButton(
-              tooltip: '清除状态',
-              onPressed: onDismiss,
-              icon: const Icon(Icons.close_rounded, size: 18),
-            ),
+            if (active && !connecting)
+              TextButton(
+                onPressed: onDismiss,
+                child: const Text('断开连接'),
+              )
+            else
+              IconButton(
+                tooltip: '清除状态',
+                onPressed: onDismiss,
+                icon: const Icon(Icons.close_rounded, size: 18),
+              ),
           ],
         ),
       ),
