@@ -50,6 +50,12 @@ class _DeviceListPageState extends State<DeviceListPage> {
   DeviceInfoModel? _sessionDevice;
   /// 相册页仍打开时视为「会话进行中」
   bool _sessionActive = false;
+  /// 用户主动断开/清除后，禁止对该机自动重连（需手动点连接）
+  final _autoConnectSuppressed = <String>{};
+  /// 本轮已对某机发起过自动连接，避免 mDNS 闪烁重复 push
+  String? _autoConnectAttemptedKey;
+  /// 自动连接失败后的冷却，避免狂重试
+  DateTime? _autoConnectCooldownUntil;
 
   @override
   void initState() {
@@ -120,7 +126,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
       _pairSub?.cancel();
       _pairSub = _pairService.pairedPhoneStream.listen((phone) async {
         if (!mounted) return;
-        _upsertLive(phone);
+        _upsertLive(phone, tryAutoConnect: false);
         // 扫码 / 搜电脑配对即记入历史，便于下次快速找到
         _history = await DeviceHistoryStore.instance.upsert(phone);
         if (!mounted) return;
@@ -221,6 +227,38 @@ class _DeviceListPageState extends State<DeviceListPage> {
         ..clear()
         ..addAll(next);
     });
+    // 实时区更新后尝试自动进相册（仅单机且无会话时）
+    _maybeAutoConnectLive();
+  }
+
+  /// 仅当「实时可连接」恰好 1 台、且无进行中会话时自动连接
+  void _maybeAutoConnectLive() {
+    if (!mounted || _galleryOpen || _connecting) return;
+    // 有最近会话时不抢连，避免从相册返回后立刻再 push
+    if (_sessionDevice != null) return;
+    final cooldown = _autoConnectCooldownUntil;
+    if (cooldown != null && DateTime.now().isBefore(cooldown)) return;
+
+    final live = _liveList;
+    if (live.length != 1) return;
+    final device = live.first;
+    final key = _keyOf(device);
+    if (_autoConnectSuppressed.contains(key)) return;
+    if (_autoConnectAttemptedKey == key) return;
+
+    _autoConnectAttemptedKey = key;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _galleryOpen || _connecting || _sessionDevice != null) {
+        return;
+      }
+      if (_liveList.length != 1 || _keyOf(_liveList.first) != key) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('发现手机「${device.deviceName}」，正在自动连接…'),
+        ),
+      );
+      unawaited(_connect(device));
+    });
   }
 
   /// 启动时探测历史设备是否仍在线，不依赖 mDNS 也能进「实时可连接」
@@ -255,11 +293,17 @@ class _DeviceListPageState extends State<DeviceListPage> {
 
   String _keyOf(DeviceInfoModel device) => DeviceHistoryStore.keyOf(device);
 
-  void _upsertLive(DeviceInfoModel device, {bool notify = true}) {
+  void _upsertLive(
+    DeviceInfoModel device, {
+    bool notify = true,
+    bool tryAutoConnect = true,
+  }) {
     final key = _keyOf(device);
     _liveDevices[key] = device;
     _stickyLiveUntil[key] = DateTime.now().add(const Duration(minutes: 5));
     if (notify && mounted) setState(() {});
+    // 历史探测等写入实时区后，同样尝试自动连接；配对/_connect 内自行连接时关闭
+    if (tryAutoConnect) _maybeAutoConnectLive();
   }
 
   /// 实时列表：当前在线/刚配对
@@ -281,6 +325,8 @@ class _DeviceListPageState extends State<DeviceListPage> {
   Future<void> _connect(DeviceInfoModel device) async {
     if (_connecting) return;
     _connecting = true;
+    // 用户明示连接：取消对该机的自动连接抑制
+    _autoConnectSuppressed.remove(_keyOf(device));
     final api = GalleryApiService(device);
     try {
       showDialog<void>(
@@ -300,8 +346,8 @@ class _DeviceListPageState extends State<DeviceListPage> {
         ip: device.ip,
         port: device.port,
       );
-      // 连接成功：写入实时 + 历史记录，并更新会话状态条
-      _upsertLive(merged);
+      // 连接成功：写入实时 + 历史记录，并更新会话状态条（此处不再触发自动连接）
+      _upsertLive(merged, notify: false, tryAutoConnect: false);
       _history = await DeviceHistoryStore.instance.upsert(merged);
       if (!mounted) return;
       setState(() {
@@ -331,12 +377,15 @@ class _DeviceListPageState extends State<DeviceListPage> {
           },
         ),
       );
-      // 从相册返回：主动断开则清会话；普通返回保留「最近连接」
+      // 从相册返回：主动断开则清会话并抑制自动重连；普通返回保留「最近连接」
       if (mounted) {
+        final key = _keyOf(merged);
         setState(() {
           _sessionActive = false;
           if (result == 'disconnect') {
             _sessionDevice = null;
+            _autoConnectSuppressed.add(key);
+            _autoConnectAttemptedKey = null;
           }
         });
         if (result == 'disconnect') {
@@ -346,6 +395,10 @@ class _DeviceListPageState extends State<DeviceListPage> {
         }
       }
     } catch (e) {
+      // 失败后允许冷却结束再自动重试，或用户手动点连接
+      _autoConnectAttemptedKey = null;
+      _autoConnectCooldownUntil =
+          DateTime.now().add(const Duration(seconds: 15));
       if (mounted) {
         Navigator.of(context).maybePop();
         ScaffoldMessenger.of(context).showSnackBar(
@@ -443,7 +496,7 @@ class _DeviceListPageState extends State<DeviceListPage> {
     );
 
     if (device != null) {
-      _upsertLive(device);
+      _upsertLive(device, tryAutoConnect: false);
       await _connect(device);
     }
   }
@@ -640,7 +693,13 @@ class _DeviceListPageState extends State<DeviceListPage> {
                                 ? null
                                 : () => _connect(_sessionDevice!),
                             onDismiss: () {
+                              final session = _sessionDevice;
                               setState(() {
+                                if (session != null) {
+                                  // 清除后不再对该机自动连接，避免立刻又弹进相册
+                                  _autoConnectSuppressed.add(_keyOf(session));
+                                  _autoConnectAttemptedKey = null;
+                                }
                                 _sessionDevice = null;
                                 _sessionActive = false;
                               });
