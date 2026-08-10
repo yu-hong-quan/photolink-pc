@@ -63,6 +63,7 @@ class PhotoMeta {
     this.albumName,
     this.mediaType = MediaKind.image,
     this.durationMs = 0,
+    this.sizeBytes = 0,
   });
 
   final String id;
@@ -80,7 +81,13 @@ class PhotoMeta {
   /// 视频时长（毫秒）；图片为 0
   final int durationMs;
 
+  /// 原文件占用字节数（手机端上报；旧端可能为 0）
+  final int sizeBytes;
+
   bool get isVideo => MediaKind.normalize(mediaType) == MediaKind.video;
+
+  /// 人类可读的文件大小（B / KB / MB / GB）
+  String get sizeLabel => formatFileSize(sizeBytes);
 
   /// 建议的本地下载文件名（尽量保留标题扩展名）
   String get suggestedFileName {
@@ -106,6 +113,7 @@ class PhotoMeta {
         'albumName': albumName,
         'mediaType': mediaType,
         'durationMs': durationMs,
+        'sizeBytes': sizeBytes,
       };
 
   factory PhotoMeta.fromJson(Map<String, dynamic> json) {
@@ -127,6 +135,33 @@ class PhotoMeta {
       albumName: json['albumName']?.toString(),
       mediaType: mediaType,
       durationMs: int.tryParse('${json['durationMs']}') ?? 0,
+      sizeBytes: int.tryParse('${json['sizeBytes']}') ?? 0,
     );
   }
+}
+
+/// 将字节数格式化为 B / KB / MB / GB
+String formatFileSize(int bytes) {
+  if (bytes <= 0) return '';
+  if (bytes < 1024) return '$bytes B';
+  if (bytes < 1024 * 1024) {
+    final kb = bytes / 1024;
+    return '${kb >= 100 ? kb.toStringAsFixed(0) : kb.toStringAsFixed(1)} KB';
+  }
+  if (bytes < 1024 * 1024 * 1024) {
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+  return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+}
+
+/// PC 端列表排序：默认按时间；可选按文件大小
+enum GallerySizeSort {
+  /// 不按大小排，保持「最近在前」
+  none,
+
+  /// 文件占用从大到小
+  sizeDesc,
+
+  /// 文件占用从小到大
+  sizeAsc,
 }

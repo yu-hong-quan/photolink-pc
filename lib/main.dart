@@ -14,8 +14,9 @@ Future<void> main() async {
   final title =
       'PhotoLink · 图联${AppEnv.flavor == AppFlavor.prod ? '' : ' · ${AppEnv.flavorLabel}'}';
   final options = WindowOptions(
-    size: const Size(1180, 760),
-    minimumSize: const Size(980, 640),
+    // 默认稍大，相册网格与任务区更舒展
+    size: const Size(1320, 860),
+    minimumSize: const Size(1040, 700),
     center: true,
     title: title,
   );

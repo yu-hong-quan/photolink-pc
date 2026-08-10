@@ -56,6 +56,9 @@ class _GalleryPageState extends State<GalleryPage> {
   /// 与相册分类分开：照片 / 视频独立管理
   String _mediaType = MediaKind.image;
 
+  /// 已加载列表的大小排序（默认不按大小，保持最近在前）
+  GallerySizeSort _sizeSort = GallerySizeSort.none;
+
   bool get _isVideoMode => _mediaType == MediaKind.video;
 
   String get _deviceKey =>
@@ -182,7 +185,39 @@ class _GalleryPageState extends State<GalleryPage> {
     if (!mounted) return;
     setState(() {
       _total = result.total;
+      // 触底只追加；禁止对已有列表重排，否则上方格子会跳动像整表刷新
       _photos.addAll(result.list);
+      if (reset && _sizeSort != GallerySizeSort.none) {
+        _applySizeSortInPlace();
+      }
+    });
+  }
+
+  /// 仅在用户主动切换排序时调用；触底加载不要调用，避免打乱已展示顺序
+  void _applySizeSortInPlace() {
+    switch (_sizeSort) {
+      case GallerySizeSort.none:
+        // 回到默认：按创建时间倒序（最近在前）
+        _photos.sort((a, b) => b.createTimeMs.compareTo(a.createTimeMs));
+      case GallerySizeSort.sizeDesc:
+        _photos.sort((a, b) {
+          final c = b.sizeBytes.compareTo(a.sizeBytes);
+          return c != 0 ? c : b.createTimeMs.compareTo(a.createTimeMs);
+        });
+      case GallerySizeSort.sizeAsc:
+        _photos.sort((a, b) {
+          final c = a.sizeBytes.compareTo(b.sizeBytes);
+          return c != 0 ? c : b.createTimeMs.compareTo(a.createTimeMs);
+        });
+    }
+  }
+
+  Future<void> _onSizeSortChanged(GallerySizeSort sort) async {
+    if (sort == _sizeSort) return;
+    setState(() {
+      _sizeSort = sort;
+      // 只在切换排序条件时重排当前已加载项
+      _applySizeSortInPlace();
     });
   }
 
@@ -690,8 +725,10 @@ class _GalleryPageState extends State<GalleryPage> {
                   albums: _albums,
                   albumId: _albumId,
                   mediaType: _mediaType,
+                  sizeSort: _sizeSort,
                   onAlbumChanged: _onAlbumChanged,
                   onMediaTypeChanged: _onMediaTypeChanged,
+                  onSizeSortChanged: _onSizeSortChanged,
                 ),
                 Expanded(child: _buildBody()),
                 TaskQueuePanel(queue: _queue),
@@ -797,6 +834,7 @@ class _GalleryPageState extends State<GalleryPage> {
             durationLabel: photo.isVideo
                 ? _formatDuration(photo.durationMs)
                 : null,
+            sizeLabel: photo.sizeLabel.isEmpty ? null : photo.sizeLabel,
             onTap: () => _toggleSelect(photo.id),
             onSecondaryTap: () => _showPhotoMenu(photo),
             badge: (photo.albumName != null && photo.albumName!.isNotEmpty)
@@ -1083,8 +1121,10 @@ class _HeaderBar extends StatelessWidget {
     required this.albums,
     required this.albumId,
     required this.mediaType,
+    required this.sizeSort,
     required this.onAlbumChanged,
     required this.onMediaTypeChanged,
+    required this.onSizeSortChanged,
   });
 
   final DeviceInfoModel device;
@@ -1094,8 +1134,21 @@ class _HeaderBar extends StatelessWidget {
   final List<Map<String, dynamic>> albums;
   final String? albumId;
   final String mediaType;
+  final GallerySizeSort sizeSort;
   final ValueChanged<String?> onAlbumChanged;
   final ValueChanged<String> onMediaTypeChanged;
+  final ValueChanged<GallerySizeSort> onSizeSortChanged;
+
+  String get _sortHint {
+    switch (sizeSort) {
+      case GallerySizeSort.none:
+        return '最近在前';
+      case GallerySizeSort.sizeDesc:
+        return '由大到小';
+      case GallerySizeSort.sizeAsc:
+        return '由小到大';
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1145,7 +1198,63 @@ class _HeaderBar extends StatelessWidget {
             ),
             const SizedBox(width: 12),
             Text(
-              '已加载 $loaded / $total · ${isVideo ? '视频' : '照片'} · 最近在前',
+              '已加载 $loaded / $total · ${isVideo ? '视频' : '照片'} · $_sortHint',
+            ),
+            const SizedBox(width: 12),
+            // 按文件占用大小排序（作用于已加载列表）
+            Material(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(12),
+              child: PopupMenuButton<GallerySizeSort>(
+                tooltip: '按文件大小排序',
+                initialValue: sizeSort,
+                onSelected: onSizeSortChanged,
+                itemBuilder: (ctx) => const [
+                  PopupMenuItem(
+                    value: GallerySizeSort.none,
+                    child: Text('不排序（最近在前）'),
+                  ),
+                  PopupMenuItem(
+                    value: GallerySizeSort.sizeDesc,
+                    child: Text('占用从大到小'),
+                  ),
+                  PopupMenuItem(
+                    value: GallerySizeSort.sizeAsc,
+                    child: Text('占用从小到大'),
+                  ),
+                ],
+                child: Padding(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.sort_rounded,
+                        size: 18,
+                        color: PhotoLinkTheme.brand.withValues(alpha: 0.85),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        sizeSort == GallerySizeSort.none
+                            ? '大小排序'
+                            : _sortHint,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13,
+                          color: Color(0xFF163A38),
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Icon(
+                        Icons.keyboard_arrow_down_rounded,
+                        size: 18,
+                        color: PhotoLinkTheme.brand.withValues(alpha: 0.7),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             ),
             if (albums.isNotEmpty) ...[
               const SizedBox(width: 16),

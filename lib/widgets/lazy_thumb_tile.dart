@@ -22,6 +22,7 @@ class LazyThumbTile extends StatefulWidget {
     this.title,
     this.isVideo = false,
     this.durationLabel,
+    this.sizeLabel,
   });
 
   final String cacheDeviceKey;
@@ -40,6 +41,9 @@ class LazyThumbTile extends StatefulWidget {
   /// 视频格子显示播放角标与时长
   final bool isVideo;
   final String? durationLabel;
+
+  /// 文件大小文案（如 1.2 MB）；图片/视频均可显示
+  final String? sizeLabel;
 
   @override
   State<LazyThumbTile> createState() => _LazyThumbTileState();
@@ -90,6 +94,20 @@ class _LazyThumbTileState extends State<LazyThumbTile> {
     final next = widget.selection.value.contains(widget.itemId);
     if (next == _selected || !mounted) return;
     setState(() => _selected = next);
+  }
+
+  /// 右下角信息条：视频「时长 · 大小」，图片仅「大小」
+  String get _metaBadgeText {
+    final parts = <String>[];
+    if (widget.isVideo &&
+        widget.durationLabel != null &&
+        widget.durationLabel!.isNotEmpty) {
+      parts.add(widget.durationLabel!);
+    }
+    if (widget.sizeLabel != null && widget.sizeLabel!.isNotEmpty) {
+      parts.add(widget.sizeLabel!);
+    }
+    return parts.join(' · ');
   }
 
   Future<void> _load() async {
@@ -184,9 +202,8 @@ class _LazyThumbTileState extends State<LazyThumbTile> {
                 shadows: const [Shadow(blurRadius: 4, color: Colors.black45)],
               ),
             ),
-            if (widget.isVideo &&
-                widget.durationLabel != null &&
-                widget.durationLabel!.isNotEmpty)
+            // 右下角：视频「时长 · 大小」，图片仅「大小」
+            if (_metaBadgeText.isNotEmpty)
               Positioned(
                 right: 6,
                 bottom: 6,
@@ -198,7 +215,7 @@ class _LazyThumbTileState extends State<LazyThumbTile> {
                     borderRadius: BorderRadius.circular(6),
                   ),
                   child: Text(
-                    widget.durationLabel!,
+                    _metaBadgeText,
                     style: const TextStyle(
                       color: Colors.white,
                       fontSize: 10,
