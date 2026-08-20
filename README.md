@@ -10,11 +10,32 @@
 
 | 端 | 文件 | 说明 |
 |----|------|------|
-| **电脑端安装包** | [⬇️ PhotoLink-Setup-1.1.1-prod.exe](./releases/PhotoLink-Setup-1.1.1-prod.exe) | Windows Setup（生产环境端口） |
-| **手机端 APK** | [⬇️ PhotoLink-1.1.1-prod-arm64.apk](https://github.com/yu-hong-quan/photolink-app/releases/download/v1.1.1/PhotoLink-1.1.1-prod-arm64.apk) | Android 安装包（arm64，App 仓库 Releases） |
+| **Windows 电脑端** | [⬇️ PhotoLink-Setup-1.1.1-prod.exe](./releases/PhotoLink-Setup-1.1.1-prod.exe) | Windows Setup（生产环境端口） |
+| **macOS 电脑端** | [⬇️ PhotoLink-1.1.1-prod-macos.dmg](./releases/PhotoLink-1.1.1-prod-macos.dmg) | macOS 磁盘镜像（拖入「应用程序」） |
+| **Android 手机端** | [⬇️ PhotoLink-1.1.1-prod-arm64.apk](https://github.com/yu-hong-quan/photolink-app/releases/download/v1.1.1/PhotoLink-1.1.1-prod-arm64.apk) | Android 安装包（arm64，App 仓库 Releases） |
+| **iOS 手机端** | — | **暂无公开安装包**（见下方说明） |
 
-> 手机与电脑必须使用同一环境（本安装包均为 **prod**）。安装路径支持中文；默认目录 `C:\Program Files\PhotoLink`。  
-> 电脑端若网页无法直下，可打开 [`releases`](./releases/) 目录 → 点击文件 → `Download` / `View raw`。
+> 手机与电脑必须使用同一环境（本安装包均为 **prod**）。  
+> Windows 默认目录：`C:\Program Files\PhotoLink`（安装路径支持中文）。  
+> 电脑端若网页无法直下，可打开 [`releases`](./releases/) 目录 → 点击文件 → `Download` / `View raw`。  
+> **Mac + Android 可以互联**（同一 Wi‑Fi、同一 FLAVOR 即可），不依赖 Windows。
+
+### macOS 安装说明（未公证）
+
+当前 DMG **未做 Apple 公证**，首次打开可能被系统拦截：
+
+1. 打开 DMG，将 `PhotoLink.app` 拖到「应用程序」
+2. 若提示「无法验证开发者」：右键 App → **打开** → **仍要打开**
+3. 或：系统设置 → 隐私与安全性 → **仍要打开**
+4. 可选（终端）：`xattr -cr /Applications/PhotoLink.app`
+
+### iOS 说明（为何没有公开包）
+
+苹果不允许像 Android APK 那样把 IPA 挂到 GitHub 供任意人下载安装。可选方式：
+
+- **日常使用**：请用 **Android APK** + Windows / macOS 电脑端
+- **自己编译安装**：在 Mac 上用 Xcode / `flutter run` 对本机 iPhone 签名安装（免费 Apple ID 约 7 天需重签）
+- **后续**：若开通 Apple Developer 与 TestFlight，再提供测试链接（仍不是 GitHub 直链 IPA）
 
 ---
 
@@ -127,11 +148,24 @@ flutter run -d windows --dart-define=FLAVOR=local
 
 ### macOS（需在 Mac 上）
 
+仅生成 `.app`：
+
 ```bash
 ./scripts/build-macos.sh prod
 ```
 
 产物：`build/macos/Build/Products/Release/photolink_pc.app`
+
+生成可分发 **DMG**（推荐上传 GitHub / `releases/`）：
+
+```bash
+./scripts/build-macos-dmg.sh prod
+# 已有 .app、只重打 DMG：
+./scripts/build-macos-dmg.sh prod --skip-build
+```
+
+产物：`releases/PhotoLink-{version}-{env}-macos.dmg`  
+（未公证；他人安装见上文「macOS 安装说明」。）
 
 ---
 
@@ -192,6 +226,12 @@ assets/icons/     # 应用 / 托盘图标
 
 **托盘 / 图标不更新？**  
 完整重启进程，不要只热重载。
+
+**macOS 下载后打不开？**  
+属未公证正常现象，见上文「macOS 安装说明」。
+
+**iOS 能从 GitHub 下载安装吗？**  
+目前不能公开分发 IPA，见上文「iOS 说明」。
 
 ---
 
