@@ -6,12 +6,12 @@
 
 ---
 
-## 下载安装（v1.1.1 · prod）
+## 下载安装（v1.1.1 · prod / macOS v1.1.2）
 
 | 端 | 文件 | 说明 |
 |----|------|------|
 | **Windows 电脑端** | [⬇️ PhotoLink-Setup-1.1.1-prod.exe](./releases/PhotoLink-Setup-1.1.1-prod.exe) | Windows Setup（生产环境端口） |
-| **macOS 电脑端** | [⬇️ PhotoLink-1.1.1-prod-macos.dmg](./releases/PhotoLink-1.1.1-prod-macos.dmg) | macOS 磁盘镜像（拖入「应用程序」） |
+| **macOS 电脑端** | [⬇️ PhotoLink-1.1.2-prod-macos.dmg](./releases/PhotoLink-1.1.2-prod-macos.dmg) | macOS 磁盘镜像（拖入「应用程序」，含正确应用图标） |
 | **Android 手机端** | [⬇️ PhotoLink-1.1.1-prod-arm64.apk](https://github.com/yu-hong-quan/photolink-app/releases/download/v1.1.1/PhotoLink-1.1.1-prod-arm64.apk) | Android 安装包（arm64，App 仓库 Releases） |
 | **iOS 手机端** | — | **暂无公开安装包**（见下方说明） |
 

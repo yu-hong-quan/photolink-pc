@@ -4,7 +4,7 @@
 #   ./scripts/build-macos-dmg.sh prod
 #   ./scripts/build-macos-dmg.sh prod --skip-build   # 仅用已有 .app 重打 DMG
 # 产物：
-#   build/macos/Build/Products/Release/photolink_pc.app
+#   build/macos/Build/Products/Release/PhotoLink.app
 #   releases/PhotoLink-{version}-{env}-macos.dmg
 #
 # 说明：当前为未公证分发包。他人首次打开可能被 Gatekeeper 拦截，
@@ -44,7 +44,17 @@ if [[ -z "$VERSION" ]]; then
   exit 1
 fi
 
-APP_SRC="build/macos/Build/Products/Release/photolink_pc.app"
+APP_DIR="build/macos/Build/Products/Release"
+resolve_app() {
+  if [[ -d "$APP_DIR/PhotoLink.app" ]]; then
+    echo "$APP_DIR/PhotoLink.app"
+  elif [[ -d "$APP_DIR/photolink_pc.app" ]]; then
+    echo "$APP_DIR/photolink_pc.app"
+  else
+    echo ""
+  fi
+}
+
 DMG_NAME="PhotoLink-${VERSION}-${ENV_NAME}-macos.dmg"
 RELEASES_DIR="$ROOT/releases"
 STAGING="$ROOT/build/dmg-staging"
@@ -58,8 +68,10 @@ else
   echo "跳过 flutter build（--skip-build）"
 fi
 
-if [[ ! -d "$APP_SRC" ]]; then
-  echo "缺少 .app 产物: $APP_SRC"
+APP_SRC="$(resolve_app)"
+if [[ -z "$APP_SRC" ]]; then
+  echo "缺少 .app 产物，请检查 $APP_DIR"
+  ls -la "$APP_DIR" || true
   exit 1
 fi
 
@@ -68,6 +80,11 @@ mkdir -p "$STAGING" "$RELEASES_DIR"
 
 # DMG 内使用友好名称 PhotoLink.app
 ditto "$APP_SRC" "$STAGING/PhotoLink.app"
+# 强制使用 AppIcon.icns，避免 Assets.car / Launchpad 缓存仍显示旧 Flutter 图标
+INFO_PLIST="$STAGING/PhotoLink.app/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Delete :CFBundleIconName" "$INFO_PLIST" 2>/dev/null || true
+/usr/libexec/PlistBuddy -c "Set :CFBundleIconFile AppIcon" "$INFO_PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$INFO_PLIST"
 ln -s /Applications "$STAGING/Applications"
 
 DMG_PATH="$RELEASES_DIR/$DMG_NAME"
