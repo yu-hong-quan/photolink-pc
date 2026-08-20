@@ -85,6 +85,10 @@ INFO_PLIST="$STAGING/PhotoLink.app/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Delete :CFBundleIconName" "$INFO_PLIST" 2>/dev/null || true
 /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile AppIcon" "$INFO_PLIST" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$INFO_PLIST"
+# 修改 Info.plist 后必须重新签名，否则沙盒初始化会直接崩溃（OSStatus -67030）
+echo ">>> ad-hoc 重新签名..."
+codesign --force --deep --sign - "$STAGING/PhotoLink.app"
+codesign --verify --deep --strict "$STAGING/PhotoLink.app"
 ln -s /Applications "$STAGING/Applications"
 
 DMG_PATH="$RELEASES_DIR/$DMG_NAME"
