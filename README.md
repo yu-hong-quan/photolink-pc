@@ -11,7 +11,7 @@
 | 端 | 文件 | 说明 |
 |----|------|------|
 | **Windows 电脑端** | [⬇️ PhotoLink-Setup-1.1.1-prod.exe](./releases/PhotoLink-Setup-1.1.1-prod.exe) | Windows Setup（当前安装包图标仍为旧版；源码图标已去白边，需在 Windows 上重跑安装包脚本） |
-| **macOS 电脑端** | [⬇️ PhotoLink-1.1.5-prod-macos.dmg](./releases/PhotoLink-1.1.5-prod-macos.dmg) | macOS 磁盘镜像（已去白边） |
+| **macOS 电脑端** | [⬇️ PhotoLink-1.1.6-prod-macos.dmg](./releases/PhotoLink-1.1.6-prod-macos.dmg) | macOS 磁盘镜像（已去白边） |
 | **Android 手机端** | [⬇️ PhotoLink-1.1.1-prod-arm64.apk](https://github.com/yu-hong-quan/photolink-app/releases/download/v1.1.1/PhotoLink-1.1.1-prod-arm64.apk) | Android APK（公开包仍为 v1.1.1；源码图标已去白边，需本机有 Android SDK 后重打 APK） |
 | **iOS 手机端** | — | **暂无公开安装包**（见下方说明） |
 

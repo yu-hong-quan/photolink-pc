@@ -80,12 +80,50 @@ mkdir -p "$STAGING" "$RELEASES_DIR"
 
 # DMG 内使用友好名称 PhotoLink.app
 ditto "$APP_SRC" "$STAGING/PhotoLink.app"
-# 强制使用 AppIcon.icns，避免 Assets.car / Launchpad 缓存仍显示旧 Flutter 图标
+
+RES="$STAGING/PhotoLink.app/Contents/Resources"
 INFO_PLIST="$STAGING/PhotoLink.app/Contents/Info.plist"
-/usr/libexec/PlistBuddy -c "Delete :CFBundleIconName" "$INFO_PLIST" 2>/dev/null || true
+ICON_PNG="$ROOT/assets/icons/app_icon.png"
+
+# 用源 PNG 现编一份已知正确的 AppIcon.icns，覆盖构建产物
+# （避免 Xcode/actool 缓存导致 Dock/启动台仍用旧白边图标）
+echo ">>> 重新生成 AppIcon.icns..."
+ICONSET="$ROOT/build/AppIcon.iconset"
+rm -rf "$ICONSET"
+mkdir -p "$ICONSET"
+sips -z 16 16     "$ICON_PNG" --out "$ICONSET/icon_16x16.png" >/dev/null
+sips -z 32 32     "$ICON_PNG" --out "$ICONSET/icon_16x16@2x.png" >/dev/null
+sips -z 32 32     "$ICON_PNG" --out "$ICONSET/icon_32x32.png" >/dev/null
+sips -z 64 64     "$ICON_PNG" --out "$ICONSET/icon_32x32@2x.png" >/dev/null
+sips -z 128 128   "$ICON_PNG" --out "$ICONSET/icon_128x128.png" >/dev/null
+sips -z 256 256   "$ICON_PNG" --out "$ICONSET/icon_128x128@2x.png" >/dev/null
+sips -z 256 256   "$ICON_PNG" --out "$ICONSET/icon_256x256.png" >/dev/null
+sips -z 512 512   "$ICON_PNG" --out "$ICONSET/icon_256x256@2x.png" >/dev/null
+sips -z 512 512   "$ICON_PNG" --out "$ICONSET/icon_512x512.png" >/dev/null
+sips -z 1024 1024 "$ICON_PNG" --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+iconutil -c icns "$ICONSET" -o "$RES/AppIcon.icns"
+
+# 同步刷新 Assets.car 中的 AppIcon，避免系统优先读到旧 car
+echo ">>> 重新编译 Assets.car..."
+ACTOOL_OUT="$ROOT/build/actool-out"
+rm -rf "$ACTOOL_OUT"
+mkdir -p "$ACTOOL_OUT"
+xcrun actool "$ROOT/macos/Runner/Assets.xcassets" \
+  --compile "$ACTOOL_OUT" \
+  --platform macosx \
+  --minimum-deployment-target 10.15 \
+  --app-icon AppIcon \
+  --output-partial-info-plist "$ACTOOL_OUT/partial.plist" >/dev/null
+if [[ -f "$ACTOOL_OUT/Assets.car" ]]; then
+  cp "$ACTOOL_OUT/Assets.car" "$RES/Assets.car"
+fi
+# icns 仍用我们 iconutil 产物（更可控）
+# 保持 IconFile + IconName
 /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile AppIcon" "$INFO_PLIST" 2>/dev/null \
   || /usr/libexec/PlistBuddy -c "Add :CFBundleIconFile string AppIcon" "$INFO_PLIST"
-# 修改 Info.plist 后必须重新签名，否则沙盒初始化会直接崩溃（OSStatus -67030）
+/usr/libexec/PlistBuddy -c "Set :CFBundleIconName AppIcon" "$INFO_PLIST" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Add :CFBundleIconName string AppIcon" "$INFO_PLIST"
+
 echo ">>> ad-hoc 重新签名..."
 codesign --force --deep --sign - "$STAGING/PhotoLink.app"
 codesign --verify --deep --strict "$STAGING/PhotoLink.app"
