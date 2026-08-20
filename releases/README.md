@@ -5,7 +5,7 @@
 - Windows Setup：  
   [PhotoLink-Setup-1.1.1-prod.exe](./PhotoLink-Setup-1.1.1-prod.exe)
 - macOS DMG：  
-  [PhotoLink-1.1.4-prod-macos.dmg](./PhotoLink-1.1.4-prod-macos.dmg)
+  [PhotoLink-1.1.5-prod-macos.dmg](./PhotoLink-1.1.5-prod-macos.dmg)
 
 配套手机端（[photolink-app](https://github.com/yu-hong-quan/photolink-app)）：
 
